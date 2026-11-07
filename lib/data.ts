@@ -27,6 +27,8 @@ export interface Shop {
 
 export interface Product {
     slug: string;
+    /** Product was created through the local seller workspace rather than the seeded catalogue. */
+    sellerManaged?: boolean;
     shopSlug: string;
     seller: string;
     name: string;

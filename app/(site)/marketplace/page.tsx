@@ -1,12 +1,10 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { FilterPanel } from "@/components/marketplace/FilterPanel";
-import { ProductGrid } from "@/components/marketplace/ProductCard";
+import { PublishedSellerProducts } from "@/components/marketplace/PublishedSellerShop";
 import { QuerySelect } from "@/components/marketplace/QuerySelect";
 import { RouteSearch } from "@/components/marketplace/RouteSearch";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
-import { ButtonLink } from "@/components/ui/ButtonLink";
-import { Icon } from "@/components/ui/Icon";
 import {
     categories,
     categoryCounts,
@@ -185,16 +183,6 @@ export default async function MarketplacePage({ searchParams }: MarketplacePageP
 
                 <div>
                     <div className="oi-result-bar">
-                        <span>
-                            Showing <b>{results.length}</b>{" "}
-                            {results.length === 1 ? "product" : "products"}
-                            {activeCategory && category !== "all" && (
-                                <> in <b>{activeCategory.name}</b></>
-                            )}
-                            {q && (
-                                <> for <b>“{q}”</b></>
-                            )}
-                        </span>
                         <QuerySelect
                             label="Sort products"
                             basePath="/marketplace"
@@ -210,24 +198,7 @@ export default async function MarketplacePage({ searchParams }: MarketplacePageP
                             }}
                         />
                     </div>
-
-                    {results.length > 0 ? (
-                        <ProductGrid products={results} compact />
-                    ) : (
-                        <div className="oi-empty oi-empty--card">
-                            <span className="oi-empty__icon" aria-hidden="true">
-                                <Icon name="search" size={28} />
-                            </span>
-                            <h3>No products match those filters</h3>
-                            <p>
-                                Try a different search term, widen the price range, or clear the
-                                filters to see the whole marketplace.
-                            </p>
-                            <ButtonLink href="/marketplace" variant="primary" size="sm">
-                                Clear filters
-                            </ButtonLink>
-                        </div>
-                    )}
+                    <PublishedSellerProducts baseProducts={results} query={q} category={category} categoryLabel={activeCategory?.name} min={min} max={max} sort={sort} verified={verified} />
                 </div>
             </div>
         </section>

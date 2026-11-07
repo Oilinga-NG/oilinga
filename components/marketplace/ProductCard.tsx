@@ -20,11 +20,14 @@ export function ProductCard({ product }: ProductCardProps) {
     const { isInWishlist, toggleWishlist } = useWishlist();
 
     const wished = isInWishlist(product.slug);
+    const productHref = product.sellerManaged
+        ? `/shops/${product.shopSlug}#shop-products`
+        : `/products/${product.slug}`;
 
     return (
         <article className="oi-product-card">
             <Link
-                href={`/products/${product.slug}`}
+                href={productHref}
                 className={cn(
                     "oi-product-card__art",
                     `oi-product-card__art--${product.art}`,
@@ -64,7 +67,7 @@ export function ProductCard({ product }: ProductCardProps) {
                     {product.seller}
                 </Link>
                 <h3 className="oi-product-card__name">
-                    <Link href={`/products/${product.slug}`}>{product.name}</Link>
+                    <Link href={productHref}>{product.name}</Link>
                 </h3>
                 <p className="oi-product-card__meta">{product.detail}</p>
                 <StarRating

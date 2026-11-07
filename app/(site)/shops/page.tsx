@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { RouteSearch } from "@/components/marketplace/RouteSearch";
+import { PublishedSellerShop } from "@/components/marketplace/PublishedSellerShop";
 import { ShopGrid } from "@/components/marketplace/ShopCard";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { ButtonLink } from "@/components/ui/ButtonLink";
@@ -80,6 +81,8 @@ export default async function ShopsPage({ searchParams }: ShopsPageProps) {
                     </Link>
                 )}
             </div>
+
+            <div className="oi-shop-grid oi-shop-grid--seller"><PublishedSellerShop mode="directory" query={q} /></div>
 
             {results.length > 0 ? (
                 <ShopGrid shops={results} />

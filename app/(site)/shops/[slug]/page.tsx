@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import { ProductGrid } from "@/components/marketplace/ProductCard";
+import { PublishedSellerShop } from "@/components/marketplace/PublishedSellerShop";
 import { ShopGrid } from "@/components/marketplace/ShopCard";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { Badge } from "@/components/ui/Badge";
@@ -24,7 +24,7 @@ export async function generateMetadata({ params }: ShopPageProps): Promise<Metad
     const { slug } = await params;
     const shop = getShop(slug);
 
-    if (!shop) return { title: "Shop not found" };
+    if (!shop) return { title: "Shop · Oilinga" };
 
     return {
         title: shop.name,
@@ -40,7 +40,7 @@ export default async function ShopPage({ params }: ShopPageProps) {
     const { slug } = await params;
     const shop = getShop(slug);
 
-    if (!shop) notFound();
+    if (!shop) return <PublishedSellerShop mode="storefront" slug={slug} />;
 
     const items = productsForShop(shop.slug);
     const others = otherShops(shop.slug, 3);
