@@ -57,6 +57,11 @@ function formatPrice(value: number): string {
     return "₦" + value.toLocaleString("en-NG");
 }
 
+function newIdempotencyKey(): string {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+    return `checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
     { value: "card", label: "Pay by Card", icon: "lock" },
     { value: "bank-transfer", label: "Bank Transfer", icon: "wallet" },
@@ -79,6 +84,10 @@ export function CheckoutView() {
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
     const [errors, setErrors] = useState<Partial<Record<keyof DeliveryInfo, string>>>({});
     const [orderError, setOrderError] = useState("");
+    const [submitting, setSubmitting] = useState(false);
+    // Stable for this checkout session: a retry after a network failure replays
+    // the original order instead of reserving stock a second time.
+    const [idempotencyKey] = useState(newIdempotencyKey);
 
     const hasUnavailable = items.some(item => Number(item.product.stock) <= 0 || item.quantity > Number(item.product.stock));
 
@@ -104,17 +113,24 @@ export function CheckoutView() {
     }
 
     async function handlePlaceOrder() {
-        if (hasUnavailable) {
-            setOrderError("Some items are no longer available. Return to your cart to update them.");
+        if (submitting || items.length === 0 || hasUnavailable) {
+            setOrderError(hasUnavailable ? "Some items are no longer available. Return to your cart to update them." : "");
             return;
         }
+        setSubmitting(true);
+        setOrderError("");
         let id = "";
         try {
             const payment = paymentMethod === "pay-on-delivery" ? "cash-on-delivery" : paymentMethod === "card" ? "paystack" : "bank-transfer";
-            const result = await apiFetch<{ id: string; orderNumber: string }>("/orders", { method: "POST", body: JSON.stringify({ delivery: deliveryInfo, payment }) });
+            const result = await apiFetch<{ id: string; orderNumber: string }>("/orders", {
+                method: "POST",
+                headers: { "idempotency-key": idempotencyKey },
+                body: JSON.stringify({ delivery: deliveryInfo, payment, idempotencyKey })
+            });
             id = result.orderNumber || result.id;
         } catch (error) {
             setOrderError(error instanceof Error ? error.message : "We could not save your order. Please try again.");
+            setSubmitting(false);
             return;
         }
         void clearCart();
@@ -391,10 +407,10 @@ export function CheckoutView() {
                                 type="button"
                                 className="oi-btn oi-btn--gold"
                                 onClick={() => void handlePlaceOrder()}
-                                disabled={items.length === 0 || hasUnavailable}
+                                disabled={submitting || items.length === 0 || hasUnavailable}
                             >
-                                Place order
-                                <Icon name="bag" size={16} />
+                                {submitting ? "Placing order…" : "Place order"}
+                                <Icon name={submitting ? "package" : "bag"} size={16} />
                             </button>
                         </div>
                     </section>

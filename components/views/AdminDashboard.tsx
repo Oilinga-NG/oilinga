@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Logo } from "@/components/brand/Logo";
 import { Icon } from "@/components/ui/Icon";
-import type { CustomerOrder } from "@/lib/types";
+import type { CustomerOrder, OrderStatusKey } from "@/lib/types";
+import { ORDER_TRANSITIONS } from "@/lib/types";
+import { mapOrder } from "@/lib/backend-mappers";
 import { readBackendData, mutateBackendData } from "@/lib/backend-client";
 import type { DatabaseShop } from "@/lib/marketplace-contracts";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -55,6 +57,15 @@ const tabs: { id: Tab; label: string; icon: "grid" | "shield" | "store" | "box" 
 
 function money(value: number) { return `₦${value.toLocaleString("en-NG", { maximumFractionDigits: 2 })}`; }
 
+const ADMIN_STATUS_LABELS: Record<OrderStatusKey, string> = {
+    PENDING: "New",
+    PROCESSING: "Processing",
+    SHIPPED: "Shipped",
+    DELIVERED: "Delivered",
+    CANCELLED: "Cancelled",
+    REFUNDED: "Refunded",
+};
+
 export function AdminDashboard() {
     const { user, ready: authReady } = useAuth();
     const router = useRouter();
@@ -79,6 +90,7 @@ export function AdminDashboard() {
     const [newUser, setNewUser] = useState({ name: "", email: "", password: "", role: "CUSTOMER" as AdminRole, emailVerified: false });
     const [userError, setUserError] = useState("");
     const [userNotice, setUserNotice] = useState("");
+    const [orderBusy, setOrderBusy] = useState("");
     const [ready, setReady] = useState(false);
 
     useEffect(() => {
@@ -138,9 +150,52 @@ export function AdminDashboard() {
         setCategoryDraft({ name: category.name, caption: category.caption, glyph: category.glyph });
         setCategoryError("");
     }
-    function saveOrders(next: CustomerOrder[]) { setOrders(next); void mutateBackendData("replace-orders", { orders: next }).catch(error => console.error("Order update failed", error)); }
-    function setPayment(orderId: string, status: PaymentState[string]) {
-        const next = { ...payments, [orderId]: status }; setPayments(next); void mutateBackendData("set-payment", { orderId, status }).catch(error => console.error("Payment status update failed", error));
+    async function refreshOrders() {
+        try {
+            const data = await readBackendData<{ orders: CustomerOrder[]; payments: PaymentState }>("admin");
+            setOrders(data.orders);
+            setPayments(data.payments);
+            setAdminError("");
+        } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not refresh orders."); }
+    }
+
+    async function updateFulfilment(order: CustomerOrder, status: OrderStatusKey) {
+        if (orderBusy) return;
+        setOrderBusy(order.id);
+        try {
+            const updated = await mutateBackendData<Record<string, unknown>>("update-order", {
+                orderId: order.dbId ?? order.id,
+                status,
+                note: status === "REFUNDED" ? "Refunded by administrator" : `Moved to ${ADMIN_STATUS_LABELS[status]} by administrator`,
+            });
+            setOrders(current => current.map(item => item.id === order.id ? mapOrder(updated) : item));
+            setAdminError("");
+            setAdminNotice(`${order.id} moved to ${ADMIN_STATUS_LABELS[status]}.`);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not update this order.");
+        } finally {
+            setOrderBusy("");
+        }
+    }
+
+    async function setPayment(orderId: string, status: PaymentState[string]) {
+        if (orderBusy) return;
+        setOrderBusy(orderId);
+        try {
+            if (status === "Refunded") {
+                const updated = await mutateBackendData<Record<string, unknown>>("set-payment", { orderId, status });
+                setOrders(current => current.map(item => item.id === orderId ? mapOrder(updated) : item));
+            } else {
+                await mutateBackendData("set-payment", { orderId, status });
+            }
+            setPayments(current => ({ ...current, [orderId]: status }));
+            setAdminError("");
+            setAdminNotice(`Payment for ${orderId} marked ${status.toLowerCase()}.`);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not update the payment record.");
+        } finally {
+            setOrderBusy("");
+        }
     }
     function saveCommission(value: string) {
         setCommissionRate(value); void mutateBackendData("set-settings", { settings: { commissionRate: Number(value) || 0 } }).catch(error => console.error("Commission setting update failed", error));
@@ -336,7 +391,66 @@ export function AdminDashboard() {
                     </section>
                 </>}
 
-                {tab === "orders" && <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Orders and payment review</h2><p>Payment status is a manual local record; no payment processor is connected.</p></div></div>{orders.length ? <div className="oi-admin__table-wrap"><table className="oi-admin__table"><thead><tr><th>Order</th><th>Customer</th><th>Total</th><th>Fulfilment</th><th>Payment</th></tr></thead><tbody>{orders.map(order => <tr key={order.id}><td><b>{order.id}</b><small>{new Date(order.date).toLocaleDateString()}</small></td><td>{order.delivery.name}<small>{order.payment}</small></td><td>{money(order.subtotal)}</td><td><select aria-label={`Fulfilment status for ${order.id}`} value={order.status} onChange={event => saveOrders(orders.map(item => item.id === order.id ? { ...item, status: event.target.value } : item))}>{["Processing", "Shipped", "Delivered", "Cancelled"].map(status => <option key={status}>{status}</option>)}</select></td><td><select aria-label={`Payment status for ${order.id}`} value={payments[order.id] ?? "Pending"} onChange={event => setPayment(order.id, event.target.value as PaymentState[string])}>{["Pending", "Confirmed", "Failed", "Refunded"].map(status => <option key={status}>{status}</option>)}</select></td></tr>)}</tbody></table></div> : <div className="oi-admin__empty"><Icon name="receipt" size={24} /><h3>No orders to review</h3><p>Marketplace orders saved in this browser will appear here.</p></div>}</section>}
+                {tab === "orders" && (
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading">
+                            <div>
+                                <h2>Orders and payment review</h2>
+                                <p>Statuses follow the fulfilment lifecycle. Refunds are recorded against the original payment.</p>
+                            </div>
+                            <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" onClick={() => void refreshOrders()}>
+                                <Icon name="receipt" size={15} /> Refresh
+                            </button>
+                        </div>
+                        {orders.length ? (
+                            <div className="oi-admin__table-wrap">
+                                <table className="oi-admin__table">
+                                    <thead><tr><th>Order</th><th>Customer &amp; items</th><th>Total</th><th>Fulfilment</th><th>Payment</th></tr></thead>
+                                    <tbody>
+                                        {orders.map(order => {
+                                            const busy = orderBusy === order.id;
+                                            const next = ORDER_TRANSITIONS[order.statusKey] ?? [];
+                                            return (
+                                                <tr key={order.id}>
+                                                    <td><b>{order.id}</b><small>{new Date(order.date).toLocaleDateString()}</small></td>
+                                                    <td>
+                                                        {order.delivery.name}
+                                                        <small>{order.items.map(item => `${item.quantity} × ${item.product.name}`).join(", ")}</small>
+                                                        <small>{order.delivery.phone}</small>
+                                                    </td>
+                                                    <td><b>{money(order.total)}</b><small>{order.events.length} status event{order.events.length === 1 ? "" : "s"}</small></td>
+                                                    <td>
+                                                        <select
+                                                            aria-label={`Fulfilment status for ${order.id}`}
+                                                            value={order.statusKey}
+                                                            disabled={busy || next.length === 0}
+                                                            onChange={event => void updateFulfilment(order, event.target.value as OrderStatusKey)}
+                                                        >
+                                                            <option value={order.statusKey}>{ADMIN_STATUS_LABELS[order.statusKey]}</option>
+                                                            {next.map(status => <option key={status} value={status}>{ADMIN_STATUS_LABELS[status]}</option>)}
+                                                        </select>
+                                                    </td>
+                                                    <td>
+                                                        <select
+                                                            aria-label={`Payment status for ${order.id}`}
+                                                            value={payments[order.id] ?? "Pending"}
+                                                            disabled={busy}
+                                                            onChange={event => void setPayment(order.id, event.target.value as PaymentState[string])}
+                                                        >
+                                                            {["Pending", "Confirmed", "Failed", "Refunded"].map(status => <option key={status}>{status}</option>)}
+                                                        </select>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : (
+                            <div className="oi-admin__empty"><Icon name="receipt" size={24} /><h3>No orders to review</h3><p>Orders placed on the marketplace will appear here.</p></div>
+                        )}
+                    </section>
+                )}
 
                 {tab === "finance" && <><section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Commission and settlements</h2><p>Estimate fees from delivered order records.</p></div><label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label></div><div className="oi-admin__metrics oi-admin__metrics--finance"><article><span>Delivered order value</span><strong>{money(deliveredGross)}</strong></article><article><span>Estimated commission</span><strong>{money(commission)}</strong></article><article><span>Estimated seller balance</span><strong>{money(Math.max(0, deliveredGross - commission))}</strong></article><article><span>Unsettled estimate</span><strong>{money(unsettled)}</strong></article></div><button className="oi-btn oi-btn--primary" type="button" disabled={unsettled <= 0} onClick={() => { const settlement = { id: `SET-${Date.now()}`, amount: unsettled, date: new Date().toISOString(), status: "Recorded locally" as const }; setSettlements([settlement, ...settlements]); void mutateBackendData("create-settlement", { settlement }).catch(error => console.error("Settlement record failed", error)); }}>Record settlement</button><p className="oi-admin__muted">This records an admin note only. It does not move money or initiate a payout.</p></section><section className="oi-admin__panel"><h2>Settlement records</h2>{settlements.length ? settlements.map(item => <div className="oi-admin__attention" key={item.id}><div><b>{item.id}</b><span>{new Date(item.date).toLocaleString()}</span></div><strong>{money(item.amount)}</strong><span className="oi-admin__badge">{item.status}</span></div>) : <p className="oi-admin__muted">No settlement records.</p>}</section></>}
 

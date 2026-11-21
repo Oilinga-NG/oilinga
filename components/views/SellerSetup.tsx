@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Logo } from "@/components/brand/Logo";
 import { Icon } from "@/components/ui/Icon";
+import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { readBackendData, slugifyShopName, mutateBackendData } from "@/lib/backend-client";
 import type { Category, ProductCategory, ProductMedia } from "@/lib/data";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -28,13 +29,39 @@ type Listing = {
     imageUrl?: string | null;
     media?: ProductMedia[];
 };
+type SellerOrderStatus = "New" | "Processing" | "Shipped" | "Delivered" | "Cancelled" | "Refunded";
 type SellerOrder = {
     id: string;
+    dbId?: string;
     customer: string;
+    customerEmail?: string;
     createdAt: string;
     total: number;
-    status: "New" | "Processing" | "Shipped" | "Delivered" | "Cancelled";
-    items: { productId: string; name: string; quantity: number }[];
+    subtotal?: number;
+    status: SellerOrderStatus;
+    paymentStatus?: string;
+    items: { productId: string; name: string; quantity: number; unitPrice?: number; lineTotal?: number }[];
+    delivery?: { name: string; phone: string; address: string; state?: string; notes?: string };
+    events?: { id: string; note?: string; createdAt: string; toStatus: string }[];
+};
+
+/** Sellers may progress or cancel; refunds remain an administrator action. */
+const SELLER_TRANSITIONS: Record<SellerOrderStatus, SellerOrderStatus[]> = {
+    New: ["Processing", "Cancelled"],
+    Processing: ["Shipped", "Cancelled"],
+    Shipped: ["Delivered"],
+    Delivered: [],
+    Cancelled: [],
+    Refunded: []
+};
+
+const SELLER_STATUS_TONE: Record<SellerOrderStatus, BadgeTone> = {
+    New: "blue",
+    Processing: "pending",
+    Shipped: "shipped",
+    Delivered: "delivered",
+    Cancelled: "red",
+    Refunded: "neutral"
 };
 type ShopSetup = {
     id?: string;
@@ -165,6 +192,7 @@ export function SellerSetup() {
     const [deleteConfirmText, setDeleteConfirmText] = useState("");
     const [deleting, setDeleting] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [orderBusy, setOrderBusy] = useState("");
     const [settingsDraft, setSettingsDraft] = useState({ shop: "", owner: "", location: "", tagline: "", description: "" });
 
     async function loadSellerData() {
@@ -372,10 +400,33 @@ export function SellerSetup() {
         } finally { setSaving(false); }
     }
 
-    function updateOrderStatus(orderId: string, status: SellerOrder["status"]) {
-        if (!setup) return;
-        setSetup({ ...setup, orders: setup.orders.map(order => order.id === orderId ? { ...order, status } : order) });
-        void mutateBackendData("update-order", { orderId, status }).catch(error => setError(error instanceof Error ? error.message : "Could not update this order."));
+    async function updateOrderStatus(orderId: string, status: SellerOrderStatus) {
+        if (!setup || orderBusy) return;
+        setOrderBusy(orderId);
+        try {
+            await mutateBackendData("update-order", { orderId, status });
+            await loadSellerData();
+            setError("");
+        } catch (updateError) {
+            setError(updateError instanceof Error ? updateError.message : "Could not update this order.");
+        } finally {
+            setOrderBusy("");
+        }
+    }
+
+    async function cancelSellerOrder(orderId: string) {
+        if (!setup || orderBusy) return;
+        if (!window.confirm("Cancel this order? Reserved stock will be returned to your shop.")) return;
+        setOrderBusy(orderId);
+        try {
+            await mutateBackendData("cancel-order", { orderId, reason: "Cancelled by seller" });
+            await loadSellerData();
+            setError("");
+        } catch (cancelError) {
+            setError(cancelError instanceof Error ? cancelError.message : "Could not cancel this order.");
+        } finally {
+            setOrderBusy("");
+        }
     }
 
     function formatMoney(value: number) {
@@ -661,7 +712,51 @@ export function SellerSetup() {
                                 <div className="oi-seller-dashboard__product-list">{setup.products.length ? setup.products.map(productRow) : <p className="oi-seller-dashboard__empty">No products yet. Add your first product to start building your catalogue.</p>}</div>
                             </>}
                             {activeTab === "inventory" && <div className="oi-seller-dashboard__product-list"><p className="oi-seller-dashboard__hint">Update stock quantities inline. Products with zero stock remain listed but cannot be fulfilled.</p>{setup.products.map(productRow)}</div>}
-                            {activeTab === "orders" && <div className="oi-seller-dashboard__orders">{setup.orders.length ? setup.orders.map(order => <article key={order.id}><div><b>Order {order.id}</b><span>{order.customer} · {new Date(order.createdAt).toLocaleDateString()}</span><small>{order.items.map(item => `${item.quantity} × ${item.name}`).join(", ")}</small></div><strong>{formatMoney(order.total)}</strong><select aria-label={`Status for order ${order.id}`} value={order.status} onChange={event => updateOrderStatus(order.id, event.target.value as SellerOrder["status"])}>{["New", "Processing", "Shipped", "Delivered", "Cancelled"].map(status => <option key={status}>{status}</option>)}</select></article>) : <div className="oi-seller-dashboard__empty-state"><Icon name="receipt" size={24} /><h3>No orders yet</h3><p>Orders placed for your products will appear here.</p></div>}</div>}
+                            {activeTab === "orders" && (
+                                <div className="oi-seller-dashboard__orders">
+                                    {setup.orders.length ? setup.orders.map(order => {
+                                        const nextStatuses = SELLER_TRANSITIONS[order.status] ?? [];
+                                        const busy = orderBusy === order.id;
+                                        return (
+                                            <article key={order.id}>
+                                                <div className="oi-seller-order__info">
+                                                    <div className="oi-seller-order__head"><b>Order {order.id}</b><Badge tone={SELLER_STATUS_TONE[order.status] ?? "neutral"}>{order.status}</Badge></div>
+                                                    <span>{order.customer} · {new Date(order.createdAt).toLocaleDateString()}</span>
+                                                    <small>{order.items.map(item => `${item.quantity} × ${item.name}`).join(", ")}</small>
+                                                    {order.delivery?.address && <small>{order.delivery.address}{order.delivery.state ? `, ${order.delivery.state}` : ""} · {order.delivery.phone}</small>}
+                                                </div>
+                                                <div className="oi-seller-order__money">
+                                                    <strong>{formatMoney(order.total)}</strong>
+                                                    <small>{order.paymentStatus === "SUCCESS" ? "Payment confirmed" : order.paymentStatus === "REFUNDED" ? "Refunded" : "Awaiting payment"}</small>
+                                                </div>
+                                                <div className="oi-seller-order__controls">
+                                                    <select
+                                                        aria-label={`Status for order ${order.id}`}
+                                                        value={order.status}
+                                                        disabled={busy || nextStatuses.length === 0}
+                                                        onChange={event => void updateOrderStatus(order.dbId ?? order.id, event.target.value as SellerOrderStatus)}
+                                                    >
+                                                        <option value={order.status}>{order.status}</option>
+                                                        {nextStatuses.map(status => <option key={status} value={status}>{status}</option>)}
+                                                    </select>
+                                                    {["New", "Processing"].includes(order.status) && (
+                                                        <button
+                                                            type="button"
+                                                            className="oi-seller-order__cancel"
+                                                            disabled={busy}
+                                                            onClick={() => void cancelSellerOrder(order.dbId ?? order.id)}
+                                                        >
+                                                            {busy ? "Working…" : "Cancel order"}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </article>
+                                        );
+                                    }) : (
+                                        <div className="oi-seller-dashboard__empty-state"><Icon name="receipt" size={24} /><h3>No orders yet</h3><p>Orders placed for your products will appear here.</p></div>
+                                    )}
+                                </div>
+                            )}
                             {activeTab === "earnings" && <>
                                 <div className="oi-seller-dashboard__metrics">
                                     <article><span>Delivered sales</span><strong>{formatMoney(delivered)}</strong><small>Based on delivered orders</small></article>

@@ -1,5 +1,5 @@
 import { defaultCategories, formatNaira, getCategoryArt, type Category, type Product, type ProductMedia, type Shop } from "@/lib/data";
-import type { CustomerOrder } from "@/lib/types";
+import type { CustomerOrder, OrderEvent, OrderPaymentStatus, OrderStatusKey, PaymentMethod } from "@/lib/types";
 
 type Row = Record<string, any>;
 export function mapProduct(row: Row): Product {
@@ -27,15 +27,104 @@ export function mapShop(row: Row): Shop & { products?: Product[] } {
     const name = row.name ?? row.shop ?? "Oilinga shop";
     return { id: row.id, slug: row.slug, name, initials: name.trim().split(/\s+/).map((x: string) => x[0]).slice(0, 2).join("").toUpperCase(), tagline: row.tagline ?? "", description: row.description ?? "", location: row.location ?? "Nigeria", since: row.createdAt ? new Date(row.createdAt).getFullYear() : undefined, rating: Number(row.rating ?? 0), reviews: Number(row.reviews ?? 0), verified: Boolean(row.verified), published: Boolean(row.published), status: row.status, verificationRequestedAt: row.verificationRequestedAt ?? null, categories: row.categories ?? categories, specialties: row.specialties ?? categories, accent: products?.[0]?.art ?? "palm", productsCount: row._count?.products ?? products?.length ?? 0, ...(products ? { products } : {}) };
 }
+const ORDER_STATUS_LABELS: Record<string, string> = {
+    PENDING: "New",
+    PROCESSING: "Processing",
+    SHIPPED: "Shipped",
+    DELIVERED: "Delivered",
+    CANCELLED: "Cancelled",
+    REFUNDED: "Refunded",
+    New: "New"
+};
+
+const ORDER_STATUS_KEYS: Record<string, OrderStatusKey> = {
+    PENDING: "PENDING",
+    PROCESSING: "PROCESSING",
+    SHIPPED: "SHIPPED",
+    DELIVERED: "DELIVERED",
+    CANCELLED: "CANCELLED",
+    REFUNDED: "REFUNDED",
+    New: "PENDING",
+    Processing: "PROCESSING",
+    Shipped: "SHIPPED",
+    Delivered: "DELIVERED",
+    Cancelled: "CANCELLED",
+    Refunded: "REFUNDED"
+};
+
+function toIso(value: unknown): string | null {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function mapPaymentMethod(value: unknown): PaymentMethod {
+    const method = String(value ?? "").toLowerCase().replace(/_/g, "-");
+    if (method === "paystack" || method === "card") return "card";
+    if (method === "cash-on-delivery" || method === "pay-on-delivery") return "pay-on-delivery";
+    return "bank-transfer";
+}
+
+function mapPaymentStatus(row: Row): OrderPaymentStatus {
+    const candidates = [row.paymentStatus, row.payments?.[row.payments.length - 1]?.status].filter(Boolean);
+    const status = String(candidates[0] ?? "PENDING").toUpperCase();
+    return (["PENDING", "SUCCESS", "FAILED", "REFUNDED"].includes(status) ? status : "PENDING") as OrderPaymentStatus;
+}
+
 export function mapOrder(row: Row): CustomerOrder {
     const status = String(row.status ?? "PENDING");
-    const labels: Record<string, string> = { PENDING: "Processing", PROCESSING: "Processing", SHIPPED: "Shipped", DELIVERED: "Delivered", CANCELLED: "Cancelled", REFUNDED: "Refunded", New: "New" };
-    const items = (row.items ?? []).map((line: Row) => {
+    const statusKey = ORDER_STATUS_KEYS[status] ?? "PENDING";
+    const snapshotItems = (row.items ?? []) as Row[];
+    const items = snapshotItems.map((line: Row) => {
         const snapshot = line.productSnapshot ?? {};
         const product = line.product ?? snapshot;
-        return { quantity: Number(line.quantity ?? 0), product: mapProduct({ ...product, id: product.id ?? line.productId, name: product.name ?? line.productName, price: product.price ?? line.unitPrice, shop: product.shop ?? { name: line.shopName, slug: product.shopSlug }, slug: product.slug ?? String(product.id ?? line.productId ?? ""), size: product.size ?? "", stock: product.stock ?? 0 }) };
+        return {
+            quantity: Number(line.quantity ?? 0),
+            unitPrice: Number(line.unitPrice ?? product.priceValue ?? product.price ?? 0),
+            lineTotal: Number(line.lineTotal ?? Number(line.unitPrice ?? product.priceValue ?? product.price ?? 0) * Number(line.quantity ?? 0)),
+            product: mapProduct({
+                ...product,
+                id: product.id ?? line.productId,
+                name: product.name ?? line.productName,
+                price: product.price ?? product.priceValue ?? line.unitPrice,
+                shop: product.shop ?? { name: product.shopName ?? line.shopName, slug: product.shopSlug },
+                slug: product.slug ?? String(product.id ?? line.productId ?? ""),
+                size: product.size ?? "",
+                stock: product.stock ?? 0
+            })
+        };
     });
-    return { id: row.orderNumber ?? row.id, customerEmail: row.customerEmail, date: (row.createdAt ?? row.date ?? new Date().toISOString()), items, subtotal: Number(row.subtotal ?? row.total ?? 0), delivery: row.delivery ?? { name: row.deliveryName, phone: row.deliveryPhone, address: row.deliveryAddress, state: row.deliveryState, notes: row.deliveryNotes }, payment: row.payment ?? row.paymentMethod ?? "card", status: labels[status] ?? status };
+    const events: OrderEvent[] = (row.events ?? []).map((event: Row) => ({
+        id: String(event.id ?? `${event.createdAt}-${event.toStatus}`),
+        fromStatus: (event.fromStatus ?? null) as OrderStatusKey | null,
+        toStatus: (event.toStatus ?? statusKey) as OrderStatusKey,
+        actorName: event.actorName ?? null,
+        note: event.note ?? null,
+        createdAt: toIso(event.createdAt) ?? toIso(row.date) ?? new Date().toISOString()
+    }));
+    return {
+        id: row.orderNumber ?? row.id,
+        dbId: row.dbId ?? row.id,
+        customerEmail: row.customerEmail,
+        date: toIso(row.createdAt ?? row.date) ?? new Date().toISOString(),
+        items,
+        subtotal: Number(row.subtotal ?? row.total ?? 0),
+        total: Number(row.total ?? row.subtotal ?? 0),
+        deliveryFee: Number(row.deliveryFee ?? 0),
+        delivery: row.delivery ?? { name: row.deliveryName, phone: row.deliveryPhone, address: row.deliveryAddress, state: row.deliveryState, notes: row.deliveryNotes },
+        payment: mapPaymentMethod(row.payment ?? row.paymentMethod),
+        paymentStatus: mapPaymentStatus(row),
+        status: ORDER_STATUS_LABELS[status] ?? status,
+        statusKey,
+        events,
+        shippedAt: toIso(row.shippedAt),
+        deliveredAt: toIso(row.deliveredAt),
+        cancelledAt: toIso(row.cancelledAt),
+        refundedAt: toIso(row.refundedAt),
+        refundAmount: row.refundAmount === null || row.refundAmount === undefined ? null : Number(row.refundAmount),
+        refundReason: row.refundReason ?? null,
+        inventoryRestored: Boolean(row.inventoryRestored)
+    };
 }
 export function mapReview(row: Row) {
     return { id: row.id, userId: row.userId, targetType: String(row.targetType ?? "PRODUCT").toLowerCase() as "product" | "shop", targetId: row.targetId ?? row.product?.slug ?? row.shop?.slug, productSlug: row.productSlug ?? row.product?.slug ?? row.shop?.slug ?? "", productName: row.productName ?? row.product?.name ?? row.shop?.name ?? "Shop", rating: Number(row.rating), text: row.text, date: row.date ?? row.createdAt, authorName: row.authorName ?? row.user?.name ?? "Oilinga customer" };

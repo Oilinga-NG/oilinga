@@ -140,8 +140,25 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
     if (action === "delete-product") return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.id))}`, { method: "DELETE" });
     if (action === "delete-shop") return await apiFetch<T>("/shops/mine", { method: "DELETE" });
     if (action === "update-order") {
-        const { orderId, status } = payload as { orderId: string; status: string };
-        return await apiFetch<T>(`/orders/${encodeURIComponent(orderId)}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+        const { orderId, status, note } = payload as { orderId: string; status: string; note?: string };
+        return await apiFetch<T>(`/orders/${encodeURIComponent(orderId)}/status`, {
+            method: "PATCH",
+            body: JSON.stringify({ status, ...(note ? { note } : {}) })
+        });
+    }
+    if (action === "cancel-order") {
+        const { orderId, reason } = payload as { orderId: string; reason?: string };
+        return await apiFetch<T>(`/orders/${encodeURIComponent(orderId)}/cancel`, {
+            method: "POST",
+            body: JSON.stringify(reason ? { reason } : {})
+        });
+    }
+    if (action === "refund-order") {
+        const { orderId, reason } = payload as { orderId: string; reason?: string };
+        return await apiFetch<T>(`/orders/${encodeURIComponent(orderId)}/refund`, {
+            method: "POST",
+            body: JSON.stringify(reason ? { reason } : {})
+        });
     }
     if (action === "admin-upsert-shop") {
         const shop = payload.shop as Record<string, any>;
@@ -179,6 +196,8 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
     if (action === "delete-category") return await apiFetch<T>(`/admin/categories/${encodeURIComponent(String(payload.id))}`, { method: "DELETE" });
     if (action === "set-payment") {
         const { orderId, status } = payload as { orderId: string; status: string };
+        // A refund changes the order lifecycle, not just the payment record.
+        if (status === "Refunded") return await apiFetch<T>(`/orders/${encodeURIComponent(orderId)}/refund`, { method: "POST", body: "{}" });
         return await apiFetch<T>(`/admin/orders/${encodeURIComponent(orderId)}/payment`, { method: "PATCH", body: JSON.stringify({ status }) });
     }
     if (action === "set-settings") {
@@ -199,16 +218,11 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
         const saved = await apiFetch<Record<string, unknown>>("/reviews", { method: "POST", body: JSON.stringify({ targetType: review.targetType === "shop" ? "SHOP" : "PRODUCT", targetId: review.targetId ?? review.productSlug, rating: review.rating, text: review.text }) });
         return { review: mapReview(saved) } as T;
     }
-    if (action === "replace-orders") {
-        const orders = payload.orders as { id: string; status: string }[];
-        for (const order of orders) await apiFetch(`/orders/${encodeURIComponent(order.id)}/status`, { method: "PATCH", body: JSON.stringify({ status: order.status }) });
-        return { ok: true } as T;
-    }
     throw new Error(`Unsupported backend write action: ${action}`);
 }
 
 function normalizeStatus(status: string) {
-    return ({ PENDING: "New", PROCESSING: "Processing", SHIPPED: "Shipped", DELIVERED: "Delivered", CANCELLED: "Cancelled" } as Record<string, string>)[status] ?? status;
+    return ({ PENDING: "New", PROCESSING: "Processing", SHIPPED: "Shipped", DELIVERED: "Delivered", CANCELLED: "Cancelled", REFUNDED: "Refunded" } as Record<string, string>)[status] ?? status;
 }
 
 function displayProductStatus(status: unknown) {
