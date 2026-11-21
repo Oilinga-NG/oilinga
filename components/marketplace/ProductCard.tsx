@@ -36,6 +36,7 @@ export function ProductCard({ product }: ProductCardProps) {
                 <Badge tone="neutral" className="oi-product-card__tag">
                     {product.tag}
                 </Badge>
+                {product.imageUrl && <img className="oi-product-card__image" src={product.imageUrl} alt="" loading="lazy" onError={event => { event.currentTarget.hidden = true; }} />}
                 <span className="oi-product-card__glyph" aria-hidden="true">
                     {product.glyph}
                 </span>

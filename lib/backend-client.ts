@@ -1,5 +1,5 @@
 import { apiFetch } from "@/lib/api-client";
-import { mapOrder, mapProduct, mapReview, mapShop } from "@/lib/backend-mappers";
+import { mapCategory, mapOrder, mapProduct, mapReview, mapShop } from "@/lib/backend-mappers";
 import { defaultCategories } from "@/lib/data";
 
 /** Compatibility adapter for the views' established data shapes; all persistence is served by oilinga_BE. */
@@ -7,12 +7,59 @@ export function slugifyShopName(value: string) {
     return value.toLowerCase().trim().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+export function normalizeProductStatus(value: unknown) {
+    const status = String(value ?? "").toLowerCase();
+    if (status === "active") return "ACTIVE";
+    if (status === "out of stock" || status === "out_of_stock" || status === "outofstock") return "OUT_OF_STOCK";
+    return "INACTIVE";
+}
+
+export function toBackendProductPayload(product: Record<string, any>) {
+    const media = Array.isArray(product.media)
+        ? product.media
+            .map((item: Record<string, any>) => typeof item === "string" ? { url: item } : item)
+            .filter((item: Record<string, any>) => Boolean(item?.url))
+            .map((item: Record<string, any>) => ({ url: String(item.url), alt: item.alt ?? null }))
+        : [];
+    return {
+        ...(product.shopId || product.shop ? { shopId: String(product.shopId ?? product.shop) } : {}),
+        name: String(product.name ?? ""),
+        ...(product.slug ? { slug: String(product.slug) } : {}),
+        categoryId: product.category ?? product.categoryId ?? undefined,
+        description: product.description || null,
+        price: Number(product.price),
+        size: product.size || null,
+        stock: Number(product.stock ?? 0),
+        status: normalizeProductStatus(product.status),
+        imageUrl: product.imageUrl || null,
+        media
+    };
+}
+
+function toBackendShopPayload(shop: Record<string, any>) {
+    return {
+        ...(shop.slug ? { slug: String(shop.slug) } : {}),
+        ...(shop.name ? { name: String(shop.name) } : {}),
+        ...(shop.owner || shop.ownerName ? { owner: String(shop.owner ?? shop.ownerName) } : {}),
+        ...(shop.location ? { location: String(shop.location) } : {}),
+        tagline: shop.tagline ?? null,
+        description: shop.description ?? null
+    };
+}
+
 export async function readBackendData<T>(view: string, params: Record<string, string> = {}): Promise<T> {
     let result: unknown;
     if (view === "marketplace") {
-        const [products, shops] = await Promise.all([apiFetch<{ items: Record<string, unknown>[] }>("/products?limit=100"), apiFetch<Record<string, unknown>[]>("/shops")]);
-        const mappedProducts = products.items.map(mapProduct);
-        result = { products: mappedProducts, shops: shops.map(row => mapShop(row)), categories: defaultCategories };
+        const [products, shops, categories] = await Promise.all([
+            apiFetch<{ items: Record<string, unknown>[] }>("/products?limit=100"),
+            apiFetch<Record<string, unknown>[]>("/shops"),
+            apiFetch<Record<string, unknown>[]>("/products/categories")
+        ]);
+        result = {
+            products: products.items.map(mapProduct),
+            shops: shops.map(row => mapShop(row)),
+            categories: categories.length ? categories.map(mapCategory) : defaultCategories
+        };
     } else if (view === "product") {
         try { const row = await apiFetch<Record<string, unknown>>(`/products/${encodeURIComponent(params.slug ?? "")}`); result = { product: mapProduct(row), shop: mapShop(row.shop as Record<string, unknown>) }; }
         catch (error) { if (error instanceof Error && "status" in error && error.status === 404) result = { product: null, shop: null }; else throw error; }
@@ -20,9 +67,10 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         try { const row = await apiFetch<Record<string, unknown>>(`/shops/${encodeURIComponent(params.slug ?? "")}`); result = { shop: mapShop(row) }; }
         catch (error) { if (error instanceof Error && "status" in error && error.status === 404) result = { shop: null }; else throw error; }
     } else if (view === "seller") {
-        const rows = await apiFetch<Record<string, unknown>[]>("/shops/mine");
+        const shops = await apiFetch<Record<string, unknown>[]>("/shops/mine");
+        const rows = await apiFetch<Record<string, unknown>[]>("/products/mine");
         const orders = await apiFetch<Record<string, unknown>[]>("/orders/seller");
-        result = { shop: rows[0] ? legacyShop(rows[0]) : null, orders: orders.map(row => ({ ...row, status: normalizeStatus(String(row.status)) })) };
+        result = { shop: shops[0] ? legacyShop(shops[0], rows) : null, orders: orders.map(row => ({ ...row, status: normalizeStatus(String(row.status)) })) };
     } else if (view === "orders") {
         result = { orders: (await apiFetch<Record<string, unknown>[]>("/orders")).map(mapOrder) };
     } else if (view === "order") {
@@ -41,7 +89,12 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         result = await apiFetch("/reviews/stats");
     } else if (view === "admin") {
         const data = await apiFetch<Record<string, any>>("/admin/data");
-        result = { ...data, shops: data.shops.map((shop: Record<string, any>) => ({ ...legacyShop(shop), shopStatus: shop.status === "SUSPENDED" ? "Paused" : "Active" })), orders: data.orders.map(mapOrder) };
+        result = {
+            ...data,
+            shops: data.shops.map((shop: Record<string, any>) => ({ ...legacyShop(shop), shopStatus: shop.status === "Suspended" || shop.status === "Paused" ? "Paused" : "Active" })),
+            categories: (data.categories ?? []).map(mapCategory),
+            orders: data.orders.map(mapOrder)
+        };
     } else {
         throw new Error(`Unsupported backend data view: ${view}`);
     }
@@ -49,11 +102,42 @@ export async function readBackendData<T>(view: string, params: Record<string, st
 }
 
 export async function mutateBackendData<T = { ok: boolean }>(action: string, payload: Record<string, unknown>): Promise<T> {
-    if (action === "upsert-shop") {
+    if (action === "create-shop") {
         const shop = payload.shop as Record<string, any>;
-        const saved = await apiFetch("/shops/mine", { method: "PUT", body: JSON.stringify({ ...shop, owner: shop.owner, products: (shop.products ?? []).map((item: Record<string, any>) => ({ ...item, price: Number(item.price), stock: Number(item.stock) })) }) });
-        return { ok: true, data: saved } as T;
+        return await apiFetch<T>("/shops", {
+            method: "POST",
+            body: JSON.stringify({
+                name: shop.name,
+                slug: shop.slug ?? slugifyShopName(String(shop.name ?? "")),
+                ownerName: shop.ownerName ?? shop.owner,
+                location: shop.location,
+                tagline: shop.tagline ?? null,
+                description: shop.description ?? null
+            })
+        });
     }
+    if (action === "update-shop" || action === "upsert-shop") {
+        const shop = payload.shop as Record<string, any>;
+        return await apiFetch<T>("/shops/mine", { method: "PATCH", body: JSON.stringify(toBackendShopPayload(shop)) });
+    }
+    if (action === "request-verification") return await apiFetch<T>("/shops/mine/verification-request", { method: "POST" });
+    if (action === "set-shop-publication") {
+        const publication = payload.publication as Record<string, any>;
+        return await apiFetch<T>("/shops/mine/publication", {
+            method: "POST",
+            body: JSON.stringify({ published: Boolean(publication.published), activateProducts: Boolean(publication.activateProducts) })
+        });
+    }
+    if (action === "create-product") {
+        const product = payload.product as Record<string, any>;
+        return await apiFetch<T>("/products", { method: "POST", body: JSON.stringify(toBackendProductPayload(product)) });
+    }
+    if (action === "update-product") {
+        const product = payload.product as Record<string, any>;
+        const id = String(payload.id ?? product.dbId ?? product.id ?? "");
+        return await apiFetch<T>(`/products/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(toBackendProductPayload(product)) });
+    }
+    if (action === "delete-product") return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.id))}`, { method: "DELETE" });
     if (action === "delete-shop") return await apiFetch<T>("/shops/mine", { method: "DELETE" });
     if (action === "update-order") {
         const { orderId, status } = payload as { orderId: string; status: string };
@@ -61,11 +145,38 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
     }
     if (action === "admin-upsert-shop") {
         const shop = payload.shop as Record<string, any>;
-        return await apiFetch<T>(`/admin/shops/${encodeURIComponent(shop.id)}`, { method: "PATCH", body: JSON.stringify({ verified: shop.verified, published: shop.published, status: shop.status }) });
+        const shopStatus = shop.shopStatus ?? shop.status;
+        return await apiFetch<T>(`/admin/shops/${encodeURIComponent(String(shop.id))}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+                verified: Boolean(shop.verified),
+                published: Boolean(shop.published),
+                status: String(shopStatus).toLowerCase() === "paused" ? "Paused" : "Active"
+            })
+        });
+    }
+    if (action === "admin-set-product-status") {
+        const product = payload.product as Record<string, any>;
+        return await apiFetch<T>(`/admin/products/${encodeURIComponent(String(payload.id ?? product.id))}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+                status: normalizeProductStatus(product.status),
+                ...(product.price !== undefined ? { price: Number(product.price) } : {}),
+                ...(product.stock !== undefined ? { stock: Number(product.stock) } : {})
+            })
+        });
     }
     if (action === "upsert-category") {
         return await apiFetch<T>("/admin/categories", { method: "POST", body: JSON.stringify(payload.category) });
     }
+    if (action === "update-category") {
+        const category = payload.category as Record<string, any>;
+        return await apiFetch<T>(`/admin/categories/${encodeURIComponent(String(category.id))}`, {
+            method: "PATCH",
+            body: JSON.stringify({ name: category.name, caption: category.caption, glyph: category.glyph })
+        });
+    }
+    if (action === "delete-category") return await apiFetch<T>(`/admin/categories/${encodeURIComponent(String(payload.id))}`, { method: "DELETE" });
     if (action === "set-payment") {
         const { orderId, status } = payload as { orderId: string; status: string };
         return await apiFetch<T>(`/admin/orders/${encodeURIComponent(orderId)}/payment`, { method: "PATCH", body: JSON.stringify({ status }) });
@@ -100,6 +211,47 @@ function normalizeStatus(status: string) {
     return ({ PENDING: "New", PROCESSING: "Processing", SHIPPED: "Shipped", DELIVERED: "Delivered", CANCELLED: "Cancelled" } as Record<string, string>)[status] ?? status;
 }
 
-function legacyShop(row: Record<string, any>) {
-    return { ...row, owner: row.ownerName ?? row.owner, status: row.status === "SUSPENDED" ? "Paused" : row.status === "DRAFT" ? "Active" : row.status ?? "Active", plan: row.plan ?? "starter", subscriptionStatus: row.subscriptionStatus ?? "Active", products: (row.products ?? []).map((product: Record<string, any>) => ({ ...product, id: String(product.legacyId ?? product.id).split(":").at(-1), price: String(product.price), stock: String(product.stock), category: product.categoryId ?? product.category ?? "crude-palm", status: product.status === "ACTIVE" || product.status === "Active" ? "Active" : "Draft" })) };
+function displayProductStatus(status: unknown) {
+    const value = String(status ?? "").toLowerCase();
+    if (value === "active") return "Active";
+    if (value === "out_of_stock" || value === "out of stock") return "Out of stock";
+    return "Draft";
+}
+
+function legacyShop(row: Record<string, any>, productRows?: Record<string, any>[]) {
+    const rawProducts = productRows ?? row.products ?? [];
+    return {
+        ...row,
+        id: String(row.id ?? row.slug ?? ""),
+        slug: row.slug,
+        name: row.name,
+        owner: row.ownerName ?? row.owner,
+        location: row.location ?? "",
+        tagline: row.tagline ?? "",
+        description: row.description ?? "",
+        verified: Boolean(row.verified),
+        published: Boolean(row.published),
+        verificationRequestedAt: row.verificationRequestedAt ?? null,
+        status: row.status === "SUSPENDED" ? "Paused" : row.status === "DRAFT" ? "Active" : row.status ?? "Active",
+        plan: row.plan ?? "Free",
+        subscriptionStatus: row.subscriptionStatus ?? "Active",
+        products: rawProducts.map((product: Record<string, any>) => {
+            const category = product.categoryId ?? product.category ?? "crude-palm";
+            return {
+                ...product,
+                dbId: String(product.id ?? ""),
+                id: String(product.legacyId ?? product.id ?? "").split(":").at(-1),
+                slug: product.slug,
+                price: String(product.price),
+                stock: String(product.stock),
+                categoryId: category,
+                category,
+                status: displayProductStatus(product.status),
+                imageUrl: product.imageUrl ?? null,
+                media: product.media ?? [],
+                description: product.description ?? "",
+                size: product.size ?? ""
+            };
+        })
+    };
 }

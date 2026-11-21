@@ -1,4 +1,4 @@
-import { defaultCategories, formatNaira, getCategoryArt, type Product, type Shop } from "@/lib/data";
+import { defaultCategories, formatNaira, getCategoryArt, type Category, type Product, type ProductMedia, type Shop } from "@/lib/data";
 import type { CustomerOrder } from "@/lib/types";
 
 type Row = Record<string, any>;
@@ -13,13 +13,19 @@ export function mapProduct(row: Row): Product {
     const shop = row.shop ?? {};
     const category = row.categoryId ?? row.category?.id ?? row.category ?? defaultCategories[0].id;
     const slug = row.slug ?? String(row.id ?? "");
-    return { id: row.id, slug, shopSlug: shop.slug ?? row.shopSlug ?? "", seller: shop.name ?? row.seller ?? "Oilinga seller", sellerManaged: true, sellerVerified: Boolean(shop.verified ?? row.sellerVerified), name: row.name ?? "Product", detail: row.size ?? "", price: row.priceLabel ?? formatNaira(priceValue), priceValue, category, art: getCategoryArt(category), glyph: row.category?.glyph ?? "🫙", tag: row.tag ?? "Seller listed", rating: Number(row.rating ?? 0), reviews: Number(row.reviews ?? 0), stock: Number(row.stock ?? 0), size: row.size ?? "", origin: shop.location ?? row.origin ?? "Nigeria", description: row.description ?? "" };
+    const media: ProductMedia[] = Array.isArray(row.media)
+        ? row.media.map((item: Row) => ({ id: item.id ? String(item.id) : undefined, url: String(item.url), alt: item.alt ?? null })).filter((item: ProductMedia) => Boolean(item.url))
+        : [];
+    return { id: row.id, slug, shopSlug: shop.slug ?? row.shopSlug ?? "", seller: shop.name ?? row.seller ?? "Oilinga seller", sellerManaged: true, sellerVerified: Boolean(shop.verified ?? row.sellerVerified), name: row.name ?? "Product", detail: row.size ?? "", price: row.priceLabel ?? formatNaira(priceValue), priceValue, category, art: getCategoryArt(category), glyph: row.category?.glyph ?? "🫙", tag: row.tag ?? "Seller listed", rating: Number(row.rating ?? 0), reviews: Number(row.reviews ?? 0), stock: Number(row.stock ?? 0), size: row.size ?? "", origin: shop.location ?? row.origin ?? "Nigeria", description: row.description ?? "", status: row.status, imageUrl: row.imageUrl ?? null, media };
+}
+export function mapCategory(row: Row): Category {
+    return { id: String(row.id), name: String(row.name ?? row.id), caption: String(row.caption ?? ""), glyph: String(row.glyph ?? "🫙") };
 }
 export function mapShop(row: Row): Shop & { products?: Product[] } {
     const products = Array.isArray(row.products) ? row.products.map(mapProduct) : undefined;
     const categories = [...new Set((products ?? []).map(p => p.category))];
     const name = row.name ?? row.shop ?? "Oilinga shop";
-    return { id: row.id, slug: row.slug, name, initials: name.trim().split(/\s+/).map((x: string) => x[0]).slice(0, 2).join("").toUpperCase(), tagline: row.tagline ?? "", description: row.description ?? "", location: row.location ?? "Nigeria", since: row.createdAt ? new Date(row.createdAt).getFullYear() : undefined, rating: Number(row.rating ?? 0), reviews: Number(row.reviews ?? 0), verified: Boolean(row.verified), categories: row.categories ?? categories, specialties: row.specialties ?? categories, accent: products?.[0]?.art ?? "palm", productsCount: row._count?.products ?? products?.length ?? 0, ...(products ? { products } : {}) };
+    return { id: row.id, slug: row.slug, name, initials: name.trim().split(/\s+/).map((x: string) => x[0]).slice(0, 2).join("").toUpperCase(), tagline: row.tagline ?? "", description: row.description ?? "", location: row.location ?? "Nigeria", since: row.createdAt ? new Date(row.createdAt).getFullYear() : undefined, rating: Number(row.rating ?? 0), reviews: Number(row.reviews ?? 0), verified: Boolean(row.verified), published: Boolean(row.published), status: row.status, verificationRequestedAt: row.verificationRequestedAt ?? null, categories: row.categories ?? categories, specialties: row.specialties ?? categories, accent: products?.[0]?.art ?? "palm", productsCount: row._count?.products ?? products?.length ?? 0, ...(products ? { products } : {}) };
 }
 export function mapOrder(row: Row): CustomerOrder {
     const status = String(row.status ?? "PENDING");

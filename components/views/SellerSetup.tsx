@@ -6,23 +6,27 @@ import { useRouter } from "next/navigation";
 import { Logo } from "@/components/brand/Logo";
 import { Icon } from "@/components/ui/Icon";
 import { readBackendData, slugifyShopName, mutateBackendData } from "@/lib/backend-client";
-import type { DatabaseShop } from "@/lib/marketplace-contracts";
-import type { ProductCategory } from "@/lib/data";
+import type { Category, ProductCategory, ProductMedia } from "@/lib/data";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { PLANS, getPlan, type BillingCycle } from "@/lib/subscription";
 import { PlanCard } from "@/components/ui/PlanCard";
 
+type ListingStatus = "Active" | "Draft" | "Out of stock";
 type Listing = {
     id: string;
+    dbId?: string;
+    slug?: string;
     name: string;
     price: string;
     size: string;
     stock: string;
     category: ProductCategory;
     description: string;
-    status: "Active" | "Draft";
+    status: ListingStatus;
+    imageUrl?: string | null;
+    media?: ProductMedia[];
 };
 type SellerOrder = {
     id: string;
@@ -33,28 +37,33 @@ type SellerOrder = {
     items: { productId: string; name: string; quantity: number }[];
 };
 type ShopSetup = {
+    id?: string;
+    slug?: string;
     shop: string;
     owner: string;
     location: string;
     tagline: string;
+    description?: string;
     products: Listing[];
     orders: SellerOrder[];
     plan: "Free";
     published: boolean;
+    verified?: boolean;
+    verificationRequestedAt?: string | null;
+    status?: "Active" | "Paused";
 };
 type Stage = "landing" | "register" | "products" | "dashboard";
 type WorkspaceTab = "overview" | "products" | "inventory" | "orders" | "earnings" | "subscription" | "settings";
 
-const blankProduct: Omit<Listing, "id" | "status"> = { name: "", price: "", size: "", stock: "", category: "crude-palm", description: "" };
-function shopRecord(value: ShopSetup): DatabaseShop {
-    const extended = value as ShopSetup & { verified?: boolean; status?: "Active" | "Paused"; subscriptionStatus?: "Active" | "Paused" | "Cancelled" };
-    const slug = slugifyShopName(value.shop);
-    return {
-        id: slug, slug, name: value.shop, owner: value.owner, location: value.location, tagline: value.tagline,
-        published: value.published, verified: Boolean(extended.verified), status: extended.status ?? "Active",
-        plan: value.plan, subscriptionStatus: extended.subscriptionStatus ?? "Active",
-        products: value.products.map((item, index) => ({ ...item, id: item.id || `${slug}-product-${index + 1}`, status: item.status ?? (value.published ? "Active" : "Draft") })),
-    };
+type ProductDraft = Omit<Listing, "id" | "dbId" | "status">;
+const blankProduct: ProductDraft = { name: "", price: "", size: "", stock: "", category: "crude-palm", description: "", imageUrl: "", media: [] };
+
+function mediaToText(media?: ProductMedia[]) {
+    return (media ?? []).map(item => item.url).join("\n");
+}
+
+function textToMedia(value: string): ProductMedia[] {
+    return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(url => ({ url }));
 }
 const workspaceTabs: { id: WorkspaceTab; label: string; icon: "grid" | "box" | "archive" | "receipt" | "wallet" | "sparkle" | "settings" }[] = [
     { id: "overview", label: "Overview", icon: "grid" },
@@ -70,6 +79,69 @@ const steps = [
     { number: "02", title: "List your products", copy: "Set product names, pack sizes, prices and available stock." },
     { number: "03", title: "Publish and grow", copy: "Publish your products and manage your shop from one place." },
 ];
+
+function ProductImageFields({ value, onChange }: {
+    value: ProductDraft;
+    onChange: (patch: Partial<ProductDraft>) => void;
+}) {
+    return <>
+        <label className="oi-seller-setup__field">Primary image URL
+            <input value={value.imageUrl ?? ""} onChange={event => onChange({ imageUrl: event.target.value })} placeholder="https://… or /assets/…" />
+        </label>
+        <label className="oi-seller-setup__field">Gallery image URLs
+            <textarea rows={3} value={mediaToText(value.media)} onChange={event => onChange({ media: textToMedia(event.target.value) })} placeholder="One URL per line" />
+        </label>
+    </>;
+}
+
+function ProductEditor({ item, categories, onSave, onDelete, busy = false }: {
+    item: Listing;
+    categories: Category[];
+    onSave: (patch: Partial<Listing>) => void;
+    onDelete: () => void;
+    busy?: boolean;
+}) {
+    const [draft, setDraft] = useState<Listing>(item);
+    const [mediaText, setMediaText] = useState(mediaToText(item.media));
+    const [expanded, setExpanded] = useState(false);
+
+    useEffect(() => {
+        setDraft(item);
+        setMediaText(mediaToText(item.media));
+    }, [item]);
+
+    function save() {
+        onSave({ ...draft, media: textToMedia(mediaText) });
+    }
+
+    return (
+        <article className="oi-seller-product-editor">
+            <div className="oi-seller-product-editor__top">
+                {draft.imageUrl && <img className="oi-seller-product-editor__image" src={draft.imageUrl} alt="" onError={event => { event.currentTarget.hidden = true; }} />}
+                <div className="oi-seller-product-editor__summary">
+                    <h3>{draft.name}</h3>
+                    <p>{draft.size} · {draft.stock} in stock</p>
+                    <span className={`oi-seller-dashboard__status oi-seller-dashboard__status--${draft.status === "Active" ? "active" : "draft"}`}>{draft.status}</span>
+                </div>
+                <strong>₦{Number(draft.price || 0).toLocaleString("en-NG")}</strong>
+                <button className="oi-seller-dashboard__text-button" type="button" disabled={busy} onClick={() => setExpanded(!expanded)}>{expanded ? "Close" : "Edit"}</button>
+                <button className="oi-seller-dashboard__text-button oi-seller-dashboard__text-button--danger" type="button" disabled={busy} onClick={onDelete}>Delete</button>
+            </div>
+            {expanded && <div className="oi-seller-product-editor__fields">
+                <label className="oi-seller-setup__field">Product name<input value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
+                <label className="oi-seller-setup__field">Category<select value={draft.category} onChange={event => setDraft({ ...draft, category: event.target.value })}>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+                <label className="oi-seller-setup__field">Description<textarea rows={3} value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label>
+                <label className="oi-seller-setup__field">Price (₦)<input type="number" min="1" value={draft.price} onChange={event => setDraft({ ...draft, price: event.target.value })} /></label>
+                <label className="oi-seller-setup__field">Pack size<input value={draft.size} onChange={event => setDraft({ ...draft, size: event.target.value })} /></label>
+                <label className="oi-seller-setup__field">Stock<input type="number" min="0" value={draft.stock} onChange={event => setDraft({ ...draft, stock: event.target.value })} /></label>
+                <label className="oi-seller-setup__field">Listing status<select value={draft.status} onChange={event => setDraft({ ...draft, status: event.target.value as ListingStatus })}><option>Active</option><option>Draft</option><option>Out of stock</option></select></label>
+                <label className="oi-seller-setup__field">Primary image URL<input value={draft.imageUrl ?? ""} onChange={event => setDraft({ ...draft, imageUrl: event.target.value })} placeholder="https://… or /assets/…" /></label>
+                <label className="oi-seller-setup__field">Gallery image URLs<textarea rows={3} value={mediaText} onChange={event => setMediaText(event.target.value)} placeholder="One URL per line" /></label>
+                <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save changes"}</button>
+            </div>}
+        </article>
+    );
+}
 
 export function SellerSetup() {
     const { user, ready: authReady, refreshUser } = useAuth();
@@ -92,6 +164,42 @@ export function SellerSetup() {
     const [showDeleteShop, setShowDeleteShop] = useState(false);
     const [deleteConfirmText, setDeleteConfirmText] = useState("");
     const [deleting, setDeleting] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [settingsDraft, setSettingsDraft] = useState({ shop: "", owner: "", location: "", tagline: "", description: "" });
+
+    async function loadSellerData() {
+        const result = await readBackendData<{ shop: Record<string, any> | null; orders: SellerOrder[] }>("seller");
+        const row = result.shop;
+        if (!row) { setSetup(null); return null; }
+        const existing: ShopSetup = {
+            id: row.id ? String(row.id) : undefined,
+            slug: row.slug,
+            shop: row.name,
+            owner: row.owner,
+            location: row.location ?? "",
+            tagline: row.tagline ?? "",
+            description: row.description ?? "",
+            products: (row.products ?? []).map((item: Record<string, any>) => ({
+                ...item,
+                id: String(item.id ?? ""),
+                dbId: item.dbId ? String(item.dbId) : undefined,
+                slug: item.slug,
+                category: item.category ?? "crude-palm",
+                description: item.description ?? item.name ?? "",
+                status: item.status ?? "Draft",
+                imageUrl: item.imageUrl ?? null,
+                media: item.media ?? []
+            })),
+            orders: result.orders,
+            plan: "Free",
+            published: Boolean(row.published),
+            verified: Boolean(row.verified),
+            verificationRequestedAt: row.verificationRequestedAt ?? null,
+            status: row.status ?? "Active"
+        };
+        setSetup(existing);
+        return existing;
+    }
 
     useEffect(() => {
         if (!authReady) return;
@@ -104,12 +212,9 @@ export function SellerSetup() {
                     return;
                 }
                 if (userRole !== "seller" && userRole !== "admin" && userRole !== "customer") { if (!cancelled) setSetup(null); return; }
-                const result = await readBackendData<{ shop: DatabaseShop | null; orders: SellerOrder[] }>("seller");
-                if (!cancelled && result.shop) {
-                    const existing: ShopSetup = { ...result.shop, shop: result.shop.name, orders: result.orders, plan: result.shop.plan as "Free", published: result.shop.published, products: result.shop.products.map(item => ({ ...item, category: item.category ?? "crude-palm", description: item.description ?? item.name })) };
-                    setSetup(existing);
-                    setStage(existing.published ? "dashboard" : "products");
-                } else if (!cancelled) { setSetup(null); setStage("landing"); }
+                const existing = await loadSellerData();
+                if (!cancelled && existing) setStage(existing.published ? "dashboard" : "products");
+                else if (!cancelled) setStage("landing");
             } catch (loadError) {
                 console.error("Seller data could not be loaded", loadError);
                 if (!cancelled) { setSetup(null); setStage("landing"); }
@@ -119,30 +224,26 @@ export function SellerSetup() {
         return () => { cancelled = true; };
     }, [authReady, userId, userRole, refreshUser]);
 
-    async function save(value: ShopSetup): Promise<boolean> {
-        setSetup(value);
-        try {
-            await mutateBackendData("upsert-shop", { shop: shopRecord(value) });
-            if (user?.role === "customer") await refreshUser();
-            await refreshMarketplace();
-            return true;
-        } catch (error) { setError(error instanceof Error ? error.message : "Could not save shop data."); return false; }
-    }
+    useEffect(() => {
+        if (!setup) return;
+        setSettingsDraft({ shop: setup.shop, owner: setup.owner, location: setup.location, tagline: setup.tagline, description: setup.description ?? "" });
+    }, [setup?.id]);
 
     async function register(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (!shop.trim() || !owner.trim() || !location.trim()) return;
-        const saved = await save({
-            shop: shop.trim(),
-            owner: owner.trim(),
-            location: location.trim(),
-            tagline: tagline.trim(),
-            products: [],
-            orders: [],
-            plan: "Free",
-            published: false,
-        });
-        if (saved) { setError(""); setStage("products"); }
+        setSaving(true);
+        try {
+            await mutateBackendData("create-shop", {
+                shop: { name: shop.trim(), slug: slugifyShopName(shop.trim()), ownerName: owner.trim(), location: location.trim(), tagline: tagline.trim(), description: "" }
+            });
+            if (user?.role === "customer") await refreshUser();
+            const existing = await loadSellerData();
+            setError("");
+            if (existing) setStage("products");
+        } catch (registrationError) {
+            setError(registrationError instanceof Error ? registrationError.message : "Could not register your shop.");
+        } finally { setSaving(false); }
     }
 
     async function addProduct(event: FormEvent<HTMLFormElement>) {
@@ -158,35 +259,117 @@ export function SellerSetup() {
             setError("Enter a product name, size, positive price and stock quantity.");
             return false;
         }
-        const saved = await save({
-            ...setup,
-            products: [...setup.products, {
-                ...product,
-                id: `product-${Date.now()}`,
-                name: product.name.trim(),
-                status: setup.published ? "Active" : "Draft",
-            }],
-        });
-        if (saved) { setProduct(blankProduct); setError(""); }
-        return saved;
+        setSaving(true);
+        try {
+            const status: ListingStatus = setup.verified && setup.status !== "Paused" && Number(product.stock) > 0 ? "Active" : "Draft";
+            await mutateBackendData("create-product", {
+                product: { ...product, name: product.name.trim(), shopId: setup.id, status }
+            });
+            await loadSellerData();
+            await refreshMarketplace();
+            setProduct(blankProduct);
+            setError("");
+            return true;
+        } catch (productError) {
+            setError(productError instanceof Error ? productError.message : "Could not add this product.");
+            return false;
+        } finally { setSaving(false); }
     }
 
     async function publishShop() {
         if (!setup?.products.length) return;
-        const saved = await save({
-            ...setup,
-            published: true,
-            products: setup.products.map((item) => ({ ...item, status: "Active" })),
-        });
-        if (saved) setStage("dashboard");
+        setSaving(true);
+        try {
+            if (!setup.verified) {
+                await mutateBackendData("request-verification", {});
+                await loadSellerData();
+                setError("Verification requested. An administrator will review your shop before you can publish.");
+            } else {
+                await mutateBackendData("set-shop-publication", { publication: { published: true, activateProducts: true } });
+                await loadSellerData();
+                await refreshMarketplace();
+                setError("");
+                setStage("dashboard");
+            }
+        } catch (publishError) {
+            setError(publishError instanceof Error ? publishError.message : "Could not publish your shop.");
+        } finally { setSaving(false); }
     }
 
-    function updateProduct(productId: string, patch: Partial<Listing>) {
+    async function requestVerification() {
         if (!setup) return;
-        save({
-            ...setup,
-            products: setup.products.map((item) => item.id === productId ? { ...item, ...patch } : item),
-        });
+        setSaving(true);
+        try {
+            await mutateBackendData("request-verification", {});
+            await loadSellerData();
+            setError("Verification requested. An administrator will review your shop before you can publish.");
+        } catch (verificationError) {
+            setError(verificationError instanceof Error ? verificationError.message : "Could not request verification.");
+        } finally { setSaving(false); }
+    }
+
+    async function updateProduct(productId: string, patch: Partial<Listing>) {
+        if (!setup) return;
+        setSaving(true);
+        try {
+            const current = setup.products.find(item => item.id === productId || item.dbId === productId);
+            if (!current) return;
+            const merged = { ...current, ...patch };
+            await mutateBackendData("update-product", { id: merged.dbId ?? merged.id, product: { ...merged, shopId: setup.id } });
+            await loadSellerData();
+            await refreshMarketplace();
+            setError("");
+        } catch (productError) {
+            setError(productError instanceof Error ? productError.message : "Could not update this product.");
+        } finally { setSaving(false); }
+    }
+
+    async function deleteProduct(item: Listing) {
+        if (!window.confirm(`Delete ${item.name}? This cannot be undone.`)) return;
+        setSaving(true);
+        try {
+            await mutateBackendData("delete-product", { id: item.dbId ?? item.id });
+            await loadSellerData();
+            await refreshMarketplace();
+            setError("");
+        } catch (productError) {
+            setError(productError instanceof Error ? productError.message : "Could not delete this product.");
+        } finally { setSaving(false); }
+    }
+
+    async function updateShop() {
+        if (!setup) return;
+        setSaving(true);
+        try {
+            await mutateBackendData("update-shop", {
+                shop: {
+                    slug: slugifyShopName(settingsDraft.shop),
+                    name: settingsDraft.shop,
+                    owner: settingsDraft.owner,
+                    location: settingsDraft.location,
+                    tagline: settingsDraft.tagline,
+                    description: settingsDraft.description
+                }
+            });
+            await loadSellerData();
+            await refreshMarketplace();
+            setError("");
+        } catch (shopError) {
+            setError(shopError instanceof Error ? shopError.message : "Could not update your shop profile.");
+        } finally { setSaving(false); }
+    }
+
+    async function setPublication(published: boolean) {
+        setSaving(true);
+        try {
+            await mutateBackendData("set-shop-publication", { publication: { published, activateProducts: published } });
+            await loadSellerData();
+            await refreshMarketplace();
+            setError("");
+            if (published) setStage("dashboard");
+        } catch (publicationError) {
+            setError(publicationError instanceof Error ? publicationError.message : "Could not update publication settings.");
+        } finally { setSaving(false); }
     }
 
     function updateOrderStatus(orderId: string, status: SellerOrder["status"]) {
@@ -218,18 +401,14 @@ export function SellerSetup() {
 
     function productRow(item: Listing) {
         return (
-            <article className="oi-seller-dashboard__product" key={item.id}>
-                <span className="oi-seller-dashboard__product-icon"><Icon name="package" size={19} /></span>
-                <div className="oi-seller-dashboard__product-info">
-                    <h3>{item.name}</h3><p>{item.size}</p>
-                </div>
-                <strong>{formatMoney(Number(item.price))}</strong>
-                <span className={`oi-seller-dashboard__status oi-seller-dashboard__status--${item.status.toLowerCase()}`}>{item.status}</span>
-                <label className="oi-seller-dashboard__stock">Stock
-                    <input aria-label={`${item.name} stock quantity`} type="number" min="0" value={item.stock} onChange={e => updateProduct(item.id, { stock: e.target.value })} />
-                </label>
-                <button className="oi-seller-dashboard__text-button" type="button" onClick={() => updateProduct(item.id, { status: item.status === "Active" ? "Draft" : "Active" })}>{item.status === "Active" ? "Pause listing" : "Activate"}</button>
-            </article>
+            <ProductEditor
+                key={item.dbId ?? item.id}
+                item={item}
+                categories={categories}
+                busy={saving}
+                onSave={patch => { void updateProduct(item.dbId ?? item.id, patch); }}
+                onDelete={() => { void deleteProduct(item); }}
+            />
         );
     }
 
@@ -364,7 +543,8 @@ export function SellerSetup() {
                         <label className="oi-seller-setup__field">Your name<input required value={owner} onChange={e => setOwner(e.target.value)} placeholder="Business owner" /></label>
                         <label className="oi-seller-setup__field">Business location<input required value={location} onChange={e => setLocation(e.target.value)} placeholder="City, State / Region" /></label>
                         <label className="oi-seller-setup__field">Short shop introduction<input value={tagline} onChange={e => setTagline(e.target.value)} placeholder="What do you make or sell?" /></label>
-                        <button className="oi-btn oi-btn--primary" type="submit">Register and continue <Icon name="arrow-right" size={16} /></button>
+                        {error && <p role="alert" className="oi-seller-setup__error">{error}</p>}
+                        <button className="oi-btn oi-btn--primary" type="submit" disabled={saving}>{saving ? "Registering…" : "Register and continue"} <Icon name="arrow-right" size={16} /></button>
                     </form>
                 </div>
             </section>
@@ -398,21 +578,25 @@ export function SellerSetup() {
                             <label className="oi-seller-setup__field">Pack size<input required value={product.size} onChange={e => setProduct({ ...product, size: e.target.value })} placeholder="5 litres" /></label>
                             <label className="oi-seller-setup__field">Stock quantity<input required type="number" min="0" value={product.stock} onChange={e => setProduct({ ...product, stock: e.target.value })} /></label>
                         </div>
+                        <ProductImageFields value={product} onChange={patch => setProduct(current => ({ ...current, ...patch }))} />
                         {error && <p role="alert" className="oi-seller-setup__error">{error}</p>}
-                        <button className="oi-btn oi-btn--outline" type="submit">Add product</button>
+                        <button className="oi-btn oi-btn--outline" type="submit" disabled={saving}>{saving ? "Saving…" : "Add product"}</button>
                     </form>}
+                    <div className="oi-seller-setup__verification">
+                        <div>
+                            <b>{setup.verified ? "Shop verified" : setup.verificationRequestedAt ? "Verification requested" : "Verification required"}</b>
+                            <span>{setup.verified ? "You can publish your shop and activate products." : setup.verificationRequestedAt ? "An administrator will review your shop before publication." : "Request verification so an administrator can approve your shop."}</span>
+                        </div>
+                        {!setup.verified && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={saving} onClick={() => void requestVerification()}>{saving ? "Sending…" : setup.verificationRequestedAt ? "Request again" : "Request verification"}</button>}
+                    </div>
                     <h2 className="oi-seller-setup__products-title">Products ({setup.products.length}{limit !== -1 ? ` / ${limit}` : ""})</h2>
                     {setup.products.length === 0 ? (
                         <p className="oi-seller-setup__empty">No products listed yet.</p>
                     ) : (
-                        <ul className="oi-seller-setup__products">
-                            {setup.products.map((item, index) => (
-                                <li key={`${item.name}-${index}`}><b>{item.name}</b><span>₦{Number(item.price).toLocaleString()} · {item.size} · {item.stock} in stock</span></li>
-                            ))}
-                        </ul>
+                        <div className="oi-seller-dashboard__product-list">{setup.products.map(productRow)}</div>
                     )}
-                    <button className="oi-btn oi-btn--primary" type="button" disabled={!setup.products.length} onClick={publishShop}>
-                        Publish shop and products <Icon name="arrow-right" size={16} />
+                    <button className="oi-btn oi-btn--primary" type="button" disabled={!setup.products.length || saving} onClick={() => void publishShop()}>
+                        {saving ? "Working…" : setup.verified ? "Publish shop and products" : "Request verification"} <Icon name="arrow-right" size={16} />
                     </button>
                 </div>
             </section>
@@ -424,7 +608,7 @@ export function SellerSetup() {
         const delivered = setup.orders.filter(order => order.status === "Delivered").reduce((total, order) => total + order.total, 0);
         const pending = setup.orders.filter(order => order.status !== "Delivered" && order.status !== "Cancelled").reduce((total, order) => total + order.total, 0);
         const tabTitle = workspaceTabs.find(tab => tab.id === activeTab)?.label ?? "Overview";
-        const shopSlug = setup.shop.toLowerCase().trim().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        const shopSlug = setup.slug ?? slugifyShopName(setup.shop);
         const currentPlan = getPlan(setup.plan?.toLowerCase() ?? "starter");
         const limit = currentPlan?.listingLimit ?? 5;
         const atLimit = limit !== -1 && setup.products.length >= limit;
@@ -451,7 +635,7 @@ export function SellerSetup() {
                         <div className="oi-seller-dashboard__workspace">
                             <div className="oi-seller-dashboard__workspace-head">
                                 <div><span className="oi-eyebrow oi-eyebrow--green">SHOP WORKSPACE</span><h2>{tabTitle}</h2></div>
-                                {activeTab === "products" && !atLimit && <button className="oi-btn oi-btn--primary" type="button" onClick={() => setProductFormOpen(!productFormOpen)}>{productFormOpen ? "Close form" : "Add product"}</button>}
+                                {activeTab === "products" && !atLimit && <button className="oi-btn oi-btn--primary" type="button" disabled={saving} onClick={() => setProductFormOpen(!productFormOpen)}>{productFormOpen ? "Close form" : "Add product"}</button>}
                             </div>
 
                             {atLimit && activeTab !== "subscription" && (
@@ -473,7 +657,7 @@ export function SellerSetup() {
                                 <div className="oi-seller-dashboard__product-list">{setup.products.slice(0, 3).map(productRow)}</div>
                             </>}
                             {activeTab === "products" && <>
-                                {productFormOpen && !atLimit && <form className="oi-seller-dashboard__add-form" onSubmit={async event => { if (await addProduct(event)) setProductFormOpen(false); }}><label className="oi-seller-setup__field">Product name<input required value={product.name} onChange={e => setProduct({ ...product, name: e.target.value })} /></label><label className="oi-seller-setup__field">Category<select required value={product.category} onChange={e => setProduct({ ...product, category: e.target.value as ProductCategory })}>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label className="oi-seller-setup__field">Product description<textarea required value={product.description} onChange={e => setProduct({ ...product, description: e.target.value })} rows={3} /></label><label className="oi-seller-setup__field">Price (₦)<input required type="number" min="1" value={product.price} onChange={e => setProduct({ ...product, price: e.target.value })} /></label><label className="oi-seller-setup__field">Pack size<input required value={product.size} onChange={e => setProduct({ ...product, size: e.target.value })} /></label><label className="oi-seller-setup__field">Stock<input required type="number" min="0" value={product.stock} onChange={e => setProduct({ ...product, stock: e.target.value })} /></label><button className="oi-btn oi-btn--primary" type="submit">Save product</button>{error && <p role="alert" className="oi-seller-setup__error">{error}</p>}</form>}
+                                {productFormOpen && !atLimit && <form className="oi-seller-dashboard__add-form" onSubmit={async event => { if (await addProduct(event)) setProductFormOpen(false); }}><label className="oi-seller-setup__field">Product name<input required value={product.name} onChange={e => setProduct({ ...product, name: e.target.value })} /></label><label className="oi-seller-setup__field">Category<select required value={product.category} onChange={e => setProduct({ ...product, category: e.target.value as ProductCategory })}>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label className="oi-seller-setup__field">Product description<textarea required value={product.description} onChange={e => setProduct({ ...product, description: e.target.value })} rows={3} /></label><label className="oi-seller-setup__field">Price (₦)<input required type="number" min="1" value={product.price} onChange={e => setProduct({ ...product, price: e.target.value })} /></label><label className="oi-seller-setup__field">Pack size<input required value={product.size} onChange={e => setProduct({ ...product, size: e.target.value })} /></label><label className="oi-seller-setup__field">Stock<input required type="number" min="0" value={product.stock} onChange={e => setProduct({ ...product, stock: e.target.value })} /></label><ProductImageFields value={product} onChange={patch => setProduct(current => ({ ...current, ...patch }))} /><button className="oi-btn oi-btn--primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save product"}</button>{error && <p role="alert" className="oi-seller-setup__error">{error}</p>}</form>}
                                 <div className="oi-seller-dashboard__product-list">{setup.products.length ? setup.products.map(productRow) : <p className="oi-seller-dashboard__empty">No products yet. Add your first product to start building your catalogue.</p>}</div>
                             </>}
                             {activeTab === "inventory" && <div className="oi-seller-dashboard__product-list"><p className="oi-seller-dashboard__hint">Update stock quantities inline. Products with zero stock remain listed but cannot be fulfilled.</p>{setup.products.map(productRow)}</div>}
@@ -507,10 +691,33 @@ export function SellerSetup() {
                             )}
                             {activeTab === "settings" && (
                                 <div className="oi-seller-dashboard__settings">
-                                    <label className="oi-seller-setup__field">Shop name<input value={setup.shop} onChange={event => save({ ...setup, shop: event.target.value })} /></label>
-                                    <label className="oi-seller-setup__field">Owner<input value={setup.owner} onChange={event => save({ ...setup, owner: event.target.value })} /></label>
-                                    <label className="oi-seller-setup__field">Location<input value={setup.location} onChange={event => save({ ...setup, location: event.target.value })} /></label>
-                                    <label className="oi-seller-setup__field">Shop introduction<input value={setup.tagline} onChange={event => save({ ...setup, tagline: event.target.value })} /></label>
+                                    <label className="oi-seller-setup__field">Shop name<input value={settingsDraft.shop} onChange={event => setSettingsDraft({ ...settingsDraft, shop: event.target.value })} /></label>
+                                    <label className="oi-seller-setup__field">Owner<input value={settingsDraft.owner} onChange={event => setSettingsDraft({ ...settingsDraft, owner: event.target.value })} /></label>
+                                    <label className="oi-seller-setup__field">Location<input value={settingsDraft.location} onChange={event => setSettingsDraft({ ...settingsDraft, location: event.target.value })} /></label>
+                                    <label className="oi-seller-setup__field">Shop introduction<input value={settingsDraft.tagline} onChange={event => setSettingsDraft({ ...settingsDraft, tagline: event.target.value })} /></label>
+                                    <label className="oi-seller-setup__field">Shop description<textarea rows={3} value={settingsDraft.description} onChange={event => setSettingsDraft({ ...settingsDraft, description: event.target.value })} /></label>
+                                    <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={saving} onClick={() => void updateShop()}>{saving ? "Saving…" : "Save shop profile"}</button>
+                                    {error && <p role="alert" className="oi-seller-setup__error">{error}</p>}
+
+                                    <div className="oi-seller-dashboard__visibility">
+                                        <div>
+                                            <h3>Verification & visibility</h3>
+                                            <p>
+                                                <b>{setup.verified ? "Verified" : setup.verificationRequestedAt ? "Verification requested" : "Not verified"}</b>
+                                                {" · "}
+                                                <b>{setup.published ? "Published" : "Unpublished"}</b>
+                                            </p>
+                                            <small>{setup.verified
+                                                ? setup.status === "Paused"
+                                                    ? "Your shop is paused. Contact an administrator before publishing."
+                                                    : "Publishing makes your shop and eligible products visible in the marketplace."
+                                                : "Admin verification is required before your shop can be published."}</small>
+                                        </div>
+                                        <div className="oi-seller-dashboard__visibility-actions">
+                                            {!setup.verified && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={saving} onClick={() => void requestVerification()}>{saving ? "Sending…" : "Request verification"}</button>}
+                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={saving || (!setup.published && (!setup.verified || setup.status === "Paused"))} onClick={() => void setPublication(!setup.published)}>{setup.published ? "Unpublish shop" : "Publish shop"}</button>
+                                        </div>
+                                    </div>
 
                                     {/* Danger zone */}
                                     <div className="oi-sub-danger-zone" style={{ marginTop: "var(--space-10)" }}>

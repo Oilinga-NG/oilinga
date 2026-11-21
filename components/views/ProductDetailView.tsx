@@ -24,7 +24,13 @@ export function ProductDetailView({ slug }: { slug: string }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const { products, categories } = useMarketplaceData();
+    const [selectedImage, setSelectedImage] = useState<string | null>(null);
     const categoryName = categories.find(category => category.id === product?.category)?.name ?? "Oils";
+    const gallery = [...new Set([...(product?.media ?? []).map(media => media.url), ...(product?.imageUrl ? [product.imageUrl] : [])])];
+
+    useEffect(() => {
+        setSelectedImage(product?.imageUrl ?? product?.media?.[0]?.url ?? null);
+    }, [product?.slug, product?.imageUrl, product?.media]);
 
     useEffect(() => {
         let cancelled = false;
@@ -46,7 +52,7 @@ export function ProductDetailView({ slug }: { slug: string }) {
     return <section className="oi-view oi-container" aria-labelledby="product-title">
         <Breadcrumbs items={[{ label: "Home", href: "/" }, { label: "Marketplace", href: "/marketplace" }, { label: product.name }]} />
         <div className="oi-pdp">
-            <div className={cn("oi-pdp__media", `oi-pdp__media--${product.art}`)}><Badge tone="neutral" className="oi-pdp__tag">{product.tag}</Badge><span className="oi-pdp__glyph" aria-hidden="true">{product.glyph}</span><span className="oi-pdp__size-badge">{product.size}</span></div>
+            <div className={cn("oi-pdp__media", `oi-pdp__media--${product.art}`)}><Badge tone="neutral" className="oi-pdp__tag">{product.tag}</Badge><span className="oi-pdp__glyph" aria-hidden="true">{product.glyph}</span>{selectedImage && <img className="oi-pdp__image" src={selectedImage} alt={product.name} onError={event => { event.currentTarget.hidden = true; }} />}<span className="oi-pdp__size-badge">{product.size}</span>{gallery.length > 1 && <div className="oi-pdp__thumbs" aria-label="Product images">{gallery.map(url => <button key={url} type="button" className={cn("oi-pdp__thumb", url === selectedImage && "is-active")} onClick={() => setSelectedImage(url)} aria-label={`View image ${url}`}><img src={url} alt="" onError={event => { event.currentTarget.hidden = true; }} /></button>)}</div>}</div>
             <div className="oi-pdp__info">
                 <span className="oi-eyebrow oi-eyebrow--green">{categoryName}</span>
                 <h1 id="product-title" className="oi-pdp__title">{product.name}</h1>

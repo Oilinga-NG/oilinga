@@ -2,6 +2,14 @@ import type { IconName } from "@/components/ui/Icon";
 
 export type ProductArt = "palm" | "refined" | "kernel" | "groundnut";
 export type ProductCategory = string;
+export type ProductStatus = "ACTIVE" | "INACTIVE" | "OUT_OF_STOCK";
+export type ShopStatus = "ACTIVE" | "DRAFT" | "SUSPENDED";
+
+export interface ProductMedia {
+    url: string;
+    alt?: string | null;
+    id?: string;
+}
 
 export interface Shop {
     id?: string;
@@ -15,6 +23,9 @@ export interface Shop {
     rating: number;
     reviews: number;
     verified: boolean;
+    published?: boolean;
+    status?: ShopStatus;
+    verificationRequestedAt?: string | null;
     categories: ProductCategory[];
     specialties: string[];
     accent: ProductArt;
@@ -42,6 +53,9 @@ export interface Product {
     size: string;
     origin: string;
     description: string;
+    status?: ProductStatus;
+    imageUrl?: string | null;
+    media?: ProductMedia[];
 }
 
 export interface Category {
