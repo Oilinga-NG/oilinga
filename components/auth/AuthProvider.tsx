@@ -1,189 +1,237 @@
 "use client";
 
-import {
-    createContext,
-    useCallback,
-    useContext,
-    useEffect,
-    useMemo,
-    useState,
-    type ReactNode,
-} from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { apiFetch } from "@/lib/api-client";
+
+export type UserRole = "customer" | "seller" | "admin";
+export type AccountStatus = "ACTIVE" | "INACTIVE" | "SUSPENDED";
+export type SignupRole = "CUSTOMER" | "SELLER";
 
 export interface AuthUser {
+    id: string;
     name: string;
     email: string;
     initials: string;
     joined: string;
+    role: UserRole;
+    status: AccountStatus;
+    emailVerifiedAt: string | null;
+    phone: string | null;
 }
 
-interface StoredAccount extends AuthUser {
-    password: string;
-}
+export type AuthResult = { ok: true; user: AuthUser } | { ok: false; error: string };
+export type IdentityResult = { ok: true; devToken?: string } | { ok: false; error: string };
 
-export type AuthResult = { ok: true } | { ok: false; error: string };
+export interface SessionInfo {
+    id: string;
+    createdAt: string;
+    expiresAt: string;
+    lastUsedAt: string;
+    revokedAt: string | null;
+    current: boolean;
+}
 
 interface AuthContextValue {
     user: AuthUser | null;
     ready: boolean;
-    signIn: (email: string, password: string) => AuthResult;
-    signUp: (name: string, email: string, password: string) => AuthResult;
-    signOut: () => void;
+    loading: boolean;
+    error: string | null;
+    signIn: (email: string, password: string) => Promise<AuthResult>;
+    signUp: (name: string, email: string, password: string, role?: SignupRole) => Promise<AuthResult>;
+    signOut: () => Promise<void>;
+    refreshUser: () => Promise<void>;
+    requestPasswordReset: (email: string) => Promise<IdentityResult>;
+    validateResetToken: (token: string) => Promise<boolean>;
+    resetPassword: (token: string, password: string) => Promise<IdentityResult>;
+    requestVerification: () => Promise<IdentityResult>;
+    verifyEmail: (token: string) => Promise<IdentityResult>;
+    listSessions: () => Promise<SessionInfo[]>;
+    revokeSession: (id: string) => Promise<IdentityResult>;
 }
-
-const ACCOUNTS_KEY = "oilinga.accounts";
-const SESSION_KEY = "oilinga.session";
-const DEMO_ACCOUNT: StoredAccount = {
-    name: "Amina Okafor",
-    email: "demo@oilinga.com",
-    password: "oilinga",
-    initials: "AO",
-    joined: "2026-01-12",
-};
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function initialsFor(name: string) {
-    const parts = name
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
+type ApiUser = {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    status: AccountStatus;
+    emailVerifiedAt: string | null;
+    phone: string | null;
+    joined?: string;
+    createdAt?: string;
+};
 
-    return (parts[0]?.[0] ?? "O").concat(parts[1]?.[0] ?? "").toUpperCase();
+const TOKEN_KEY = "oilinga_access_token";
+
+function asAuthUser(user: ApiUser): AuthUser {
+    const name = user.name || "Oilinga customer";
+    return {
+        id: user.id,
+        name,
+        email: user.email,
+        role: String(user.role).toLowerCase() as UserRole,
+        status: user.status ?? "ACTIVE",
+        emailVerifiedAt: user.emailVerifiedAt ?? null,
+        phone: user.phone ?? null,
+        joined: user.joined ?? user.createdAt?.slice(0, 10) ?? "",
+        initials: name.trim().split(/\s+/).map(part => part[0]).slice(0, 2).join("").toUpperCase()
+    };
 }
 
-function readAccounts(): StoredAccount[] {
-    try {
-        const raw = window.localStorage.getItem(ACCOUNTS_KEY);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as StoredAccount[]) : [];
-    } catch {
-        return [];
-    }
+function messageFor(error: unknown, fallback: string): string {
+    return error instanceof Error ? error.message : fallback;
 }
 
-function writeAccounts(accounts: StoredAccount[]) {
-    try {
-        window.localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-    } catch {
-        // Demo storage can be unavailable in private browsing; the session still works.
-    }
-}
-
-function readSession(): AuthUser | null {
-    try {
-        const raw = window.localStorage.getItem(SESSION_KEY);
-        if (!raw) return null;
-        const parsed = JSON.parse(raw) as AuthUser;
-        if (!parsed?.email || !parsed?.name) return null;
-        return parsed;
-    } catch {
-        return null;
-    }
-}
-
-function persist(user: AuthUser) {
-    try {
-        window.localStorage.setItem(SESSION_KEY, JSON.stringify(user));
-        document.cookie = `oilinga_session=1; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
-    } catch {
-        // Ignore storage failures.
-    }
-}
-
-function clearSession() {
-    try {
-        window.localStorage.removeItem(SESSION_KEY);
-        document.cookie = "oilinga_session=; path=/; max-age=0; SameSite=Lax";
-    } catch {
-        // Ignore storage failures.
-    }
+function isUnauthorized(error: unknown): boolean {
+    return error instanceof Error && "status" in error && error.status === 401;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<AuthUser | null>(null);
     const [ready, setReady] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
-    useEffect(() => {
-        setUser(readSession());
-        setReady(true);
+    const refreshUser = useCallback(async () => {
+        try {
+            const result = await apiFetch<ApiUser>("/auth/me");
+            setUser(asAuthUser(result));
+            setError(null);
+        } catch (requestError) {
+            setUser(null);
+            if (isUnauthorized(requestError)) {
+                if (typeof window !== "undefined") window.localStorage.removeItem(TOKEN_KEY);
+            } else {
+                setError(messageFor(requestError, "Could not load your account."));
+            }
+        } finally { setReady(true); }
     }, []);
 
-    const signIn = useCallback<AuthContextValue["signIn"]>((email, password) => {
-        const normalized = email.trim().toLowerCase();
-        const accounts = readAccounts();
-        const record =
-            accounts.find((account) => account.email === normalized) ??
-            (normalized === DEMO_ACCOUNT.email ? DEMO_ACCOUNT : undefined);
+    useEffect(() => { void refreshUser(); }, [refreshUser]);
 
-        if (!record) {
-            return {
-                ok: false,
-                error: "No account found for that email. Try the demo account or create one.",
-            };
-        }
-
-        if (record.password !== password) {
-            return { ok: false, error: "That password doesn’t match. Please try again." };
-        }
-
-        const session: AuthUser = {
-            name: record.name,
-            email: record.email,
-            initials: record.initials || initialsFor(record.name),
-            joined: record.joined,
-        };
-
-        setUser(session);
-        persist(session);
-        return { ok: true };
+    const authenticate = useCallback(async (
+        action: "signup" | "signin",
+        fields: { name?: string; email: string; password: string; role?: SignupRole }
+    ): Promise<AuthResult> => {
+        setLoading(true);
+        setError(null);
+        try {
+            const result = await apiFetch<{ user: ApiUser; accessToken: string }>(
+                action === "signup" ? "/auth/register" : "/auth/login",
+                { method: "POST", body: JSON.stringify(fields) }
+            );
+            if (typeof window !== "undefined") window.localStorage.setItem(TOKEN_KEY, result.accessToken);
+            const authenticatedUser = asAuthUser(result.user);
+            setUser(authenticatedUser);
+            return { ok: true, user: authenticatedUser };
+        } catch (requestError) {
+            const message = messageFor(requestError, "Authentication failed. Try again.");
+            setError(message);
+            return { ok: false, error: message };
+        } finally { setLoading(false); setReady(true); }
     }, []);
 
-    const signUp = useCallback<AuthContextValue["signUp"]>((name, email, password) => {
-        const normalized = email.trim().toLowerCase();
-        const accounts = readAccounts();
-
-        if (
-            normalized === DEMO_ACCOUNT.email ||
-            accounts.some((account) => account.email === normalized)
-        ) {
-            return {
-                ok: false,
-                error: "An account with that email already exists. Try logging in instead.",
-            };
-        }
-
-        const session: AuthUser = {
-            name: name.trim(),
-            email: normalized,
-            initials: initialsFor(name),
-            joined: new Date().toISOString().slice(0, 10),
-        };
-
-        writeAccounts([...accounts, { ...session, password }]);
-        setUser(session);
-        persist(session);
-        return { ok: true };
-    }, []);
-
-    const signOut = useCallback(() => {
-        setUser(null);
-        clearSession();
-    }, []);
-
-    const value = useMemo(
-        () => ({ user, ready, signIn, signUp, signOut }),
-        [user, ready, signIn, signUp, signOut],
+    const signIn = useCallback((email: string, password: string) => authenticate("signin", { email, password }), [authenticate]);
+    const signUp = useCallback(
+        (name: string, email: string, password: string, role: SignupRole = "CUSTOMER") =>
+            authenticate("signup", { name, email, password, role }),
+        [authenticate]
     );
+
+    const signOut = useCallback(async () => {
+        setLoading(true);
+        try {
+            // Revoke the server-side session before discarding the local token.
+            await apiFetch("/auth/logout", { method: "POST" }).catch(() => undefined);
+            setUser(null);
+        } finally {
+            if (typeof window !== "undefined") window.localStorage.removeItem(TOKEN_KEY);
+            setLoading(false);
+        }
+    }, []);
+
+    const requestPasswordReset = useCallback(async (email: string): Promise<IdentityResult> => {
+        try {
+            const result = await apiFetch<{ devToken?: string }>("/auth/password/forgot", {
+                method: "POST", body: JSON.stringify({ email })
+            });
+            return { ok: true, ...(result.devToken ? { devToken: result.devToken } : {}) };
+        } catch (requestError) {
+            return { ok: false, error: messageFor(requestError, "Could not request a reset link.") };
+        }
+    }, []);
+
+    const validateResetToken = useCallback(async (token: string): Promise<boolean> => {
+        try {
+            const result = await apiFetch<{ valid: boolean }>(`/auth/password/validate?token=${encodeURIComponent(token)}`);
+            return result.valid;
+        } catch { return false; }
+    }, []);
+
+    const resetPassword = useCallback(async (token: string, password: string): Promise<IdentityResult> => {
+        try {
+            await apiFetch("/auth/password/reset", { method: "POST", body: JSON.stringify({ token, password }) });
+            return { ok: true };
+        } catch (requestError) {
+            return { ok: false, error: messageFor(requestError, "Could not reset your password.") };
+        }
+    }, []);
+
+    const requestVerification = useCallback(async (): Promise<IdentityResult> => {
+        try {
+            const result = await apiFetch<{ devToken?: string; alreadyVerified?: boolean }>("/auth/email/verification/request", { method: "POST" });
+            if (result.alreadyVerified) {
+                await refreshUser();
+                return { ok: true };
+            }
+            return { ok: true, ...(result.devToken ? { devToken: result.devToken } : {}) };
+        } catch (requestError) {
+            return { ok: false, error: messageFor(requestError, "Could not send a verification link.") };
+        }
+    }, [refreshUser]);
+
+    const verifyEmail = useCallback(async (token: string): Promise<IdentityResult> => {
+        try {
+            await apiFetch("/auth/email/verification/confirm", { method: "POST", body: JSON.stringify({ token }) });
+            await refreshUser();
+            return { ok: true };
+        } catch (requestError) {
+            return { ok: false, error: messageFor(requestError, "Could not verify your email.") };
+        }
+    }, [refreshUser]);
+
+    const listSessions = useCallback(async (): Promise<SessionInfo[]> => {
+        return apiFetch<SessionInfo[]>("/auth/sessions");
+    }, []);
+
+    const revokeSession = useCallback(async (id: string): Promise<IdentityResult> => {
+        try {
+            await apiFetch(`/auth/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+            return { ok: true };
+        } catch (requestError) {
+            return { ok: false, error: messageFor(requestError, "Could not revoke this session.") };
+        }
+    }, []);
+
+    const value = useMemo(() => ({
+        user, ready, loading, error,
+        signIn, signUp, signOut, refreshUser,
+        requestPasswordReset, validateResetToken, resetPassword,
+        requestVerification, verifyEmail, listSessions, revokeSession
+    }), [
+        user, ready, loading, error,
+        signIn, signUp, signOut, refreshUser,
+        requestPasswordReset, validateResetToken, resetPassword,
+        requestVerification, verifyEmail, listSessions, revokeSession
+    ]);
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
     const context = useContext(AuthContext);
-    if (!context) {
-        throw new Error("useAuth must be used inside an AuthProvider");
-    }
+    if (!context) throw new Error("useAuth must be used inside AuthProvider.");
     return context;
 }

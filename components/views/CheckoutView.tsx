@@ -3,10 +3,13 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/lib/cart-context";
-import type { DeliveryInfo, PaymentMethod, CustomerOrder } from "@/lib/types";
+import type { DeliveryInfo, PaymentMethod } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { Icon } from "@/components/ui/Icon";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
+import { apiFetch } from "@/lib/api-client";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { LoadingState } from "@/components/ui/LoadingState";
 
 const NIGERIAN_STATES = [
     "Abia",
@@ -60,31 +63,10 @@ const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; icon: Parameters<t
     { value: "pay-on-delivery", label: "Pay on Delivery", icon: "package" },
 ];
 
-const ORDERS_KEY = "oilinga_orders";
-
-function readOrders(): CustomerOrder[] {
-    if (typeof window === "undefined") return [];
-    try {
-        const raw = window.localStorage.getItem(ORDERS_KEY);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as CustomerOrder[]) : [];
-    } catch {
-        return [];
-    }
-}
-
-function writeOrders(orders: CustomerOrder[]): void {
-    try {
-        window.localStorage.setItem(ORDERS_KEY, JSON.stringify(orders));
-    } catch {
-        // Storage may be unavailable.
-    }
-}
-
 export function CheckoutView() {
     const router = useRouter();
     const { items, clearCart } = useCart();
+    const { user, ready: authReady } = useAuth();
 
     const [step, setStep] = useState<1 | 2 | 3>(1);
     const [deliveryInfo, setDeliveryInfo] = useState<DeliveryInfo>({
@@ -96,11 +78,15 @@ export function CheckoutView() {
     });
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
     const [errors, setErrors] = useState<Partial<Record<keyof DeliveryInfo, string>>>({});
+    const [orderError, setOrderError] = useState("");
 
     const subtotal = items.reduce(
         (sum, item) => sum + item.product.priceValue * item.quantity,
         0,
     );
+
+    if (!authReady) return <LoadingState label="Loading your account" />;
+    if (!user) return <main className="oi-page"><div className="oi-cart-empty"><h1 className="oi-page-title">Sign in to check out</h1><p className="oi-muted">Orders are securely saved to your Oilinga account.</p><div className="oi-checkout-auth-actions"><a className="oi-btn oi-btn--primary" href="/auth/login?next=%2Fcheckout">Sign in</a><a className="oi-btn oi-btn--outline" href="/auth/signup?next=%2Fcheckout">Create account</a></div></div></main>;
 
     function validateDelivery(): boolean {
         const newErrors: Partial<Record<keyof DeliveryInfo, string>> = {};
@@ -116,19 +102,16 @@ export function CheckoutView() {
         if (validateDelivery()) setStep(2);
     }
 
-    function handlePlaceOrder() {
-        const id = "OL-" + Math.random().toString(36).slice(2, 6).toUpperCase();
-        const order: CustomerOrder = {
-            id,
-            date: new Date().toISOString(),
-            items,
-            subtotal,
-            delivery: deliveryInfo,
-            payment: paymentMethod,
-            status: "Processing",
-        };
-        const existing = readOrders();
-        writeOrders([...existing, order]);
+    async function handlePlaceOrder() {
+        let id = "";
+        try {
+            const payment = paymentMethod === "pay-on-delivery" ? "cash-on-delivery" : paymentMethod === "card" ? "paystack" : "bank-transfer";
+            const result = await apiFetch<{ id: string; orderNumber: string }>("/orders", { method: "POST", body: JSON.stringify({ delivery: deliveryInfo, payment }) });
+            id = result.orderNumber || result.id;
+        } catch (error) {
+            setOrderError(error instanceof Error ? error.message : "We could not save your order. Please try again.");
+            return;
+        }
         clearCart();
         router.push("/orders/" + id);
     }
@@ -312,6 +295,7 @@ export function CheckoutView() {
                             ))}
                         </div>
                         <div style={{ display: "flex", gap: "var(--space-3)", marginTop: "var(--space-6)" }}>
+                            {orderError && <p className="oi-form-error" role="alert">{orderError}</p>}
                             <button
                                 type="button"
                                 className="oi-btn oi-btn--outline"

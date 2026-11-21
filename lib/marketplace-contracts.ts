@@ -1,0 +1,2 @@
+export interface DatabaseProduct { id: string; name: string; price: string; size: string; stock: string; status: "Active" | "Draft"; category?: string; description?: string; tag?: string; }
+export interface DatabaseShop { id: string; slug: string; name: string; ownerId?: string; owner: string; location: string; tagline: string; description?: string; createdAt?: string; published: boolean; verified: boolean; status: "Active" | "Paused"; plan: string; subscriptionStatus: "Active" | "Paused" | "Cancelled"; products: DatabaseProduct[]; rating?: number; reviews?: number; }

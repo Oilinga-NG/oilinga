@@ -5,7 +5,7 @@ import type { Product } from "@/lib/data";
 import { cn } from "@/lib/cn";
 import { Badge } from "@/components/ui/Badge";
 import { Icon } from "@/components/ui/Icon";
-import { StarRating } from "@/components/ui/StarRating";
+import { LiveRating } from "@/components/ui/LiveRating";
 import { useToast } from "@/components/ui/Toast";
 import { useCart } from "@/lib/cart-context";
 import { useWishlist } from "@/lib/wishlist-context";
@@ -20,9 +20,7 @@ export function ProductCard({ product }: ProductCardProps) {
     const { isInWishlist, toggleWishlist } = useWishlist();
 
     const wished = isInWishlist(product.slug);
-    const productHref = product.sellerManaged
-        ? `/shops/${product.shopSlug}#shop-products`
-        : `/products/${product.slug}`;
+    const productHref = `/products/${product.slug}`;
 
     return (
         <article className="oi-product-card">
@@ -63,16 +61,17 @@ export function ProductCard({ product }: ProductCardProps) {
                     href={`/shops/${product.shopSlug}`}
                     className="oi-product-card__seller"
                 >
-                    <Icon name="check" size={12} />
+                    <Icon name={product.sellerVerified === false ? "store" : "check"} size={12} />
                     {product.seller}
                 </Link>
                 <h3 className="oi-product-card__name">
                     <Link href={productHref}>{product.name}</Link>
                 </h3>
                 <p className="oi-product-card__meta">{product.detail}</p>
-                <StarRating
-                    rating={product.rating}
-                    reviews={product.reviews}
+                <LiveRating
+                    targetType="product"
+                    targetId={product.slug}
+                    fallback={{ rating: product.rating, reviews: product.reviews }}
                     className="oi-product-card__rating"
                 />
                 <div className="oi-product-card__footer">

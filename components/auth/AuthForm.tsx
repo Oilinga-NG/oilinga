@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { Logo } from "@/components/brand/Logo";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
-import { useAuth } from "./AuthProvider";
+import { useAuth, type SignupRole } from "./AuthProvider";
 
 export interface AuthFormProps {
     mode: "login" | "signup";
@@ -18,6 +18,7 @@ interface Values {
     email: string;
     password: string;
     confirm: string;
+    role: SignupRole;
 }
 
 function safeNext(next?: string) {
@@ -33,6 +34,7 @@ export function AuthForm({ mode, next }: AuthFormProps) {
         email: "",
         password: "",
         confirm: "",
+        role: "CUSTOMER",
     });
     const [errors, setErrors] = useState<Partial<Record<keyof Values | "terms", string>>>({});
     const [formError, setFormError] = useState("");
@@ -61,8 +63,10 @@ export function AuthForm({ mode, next }: AuthFormProps) {
             nextErrors.email = "Enter a valid email address.";
         }
 
-        if (values.password.length < 6) {
-            nextErrors.password = "Use at least 6 characters.";
+        if (isSignup && values.password.length < 8) {
+            nextErrors.password = "Use at least 8 characters.";
+        } else if (!isSignup && !values.password.length) {
+            nextErrors.password = "Enter your password.";
         }
 
         if (isSignup && values.confirm !== values.password) {
@@ -76,13 +80,7 @@ export function AuthForm({ mode, next }: AuthFormProps) {
         return nextErrors;
     }
 
-    function fillDemo() {
-        setValues({ name: "", email: "demo@oilinga.com", password: "oilinga", confirm: "" });
-        setErrors({});
-        setFormError("");
-    }
-
-    function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    async function handleSubmit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         const nextErrors = validate();
 
@@ -92,9 +90,9 @@ export function AuthForm({ mode, next }: AuthFormProps) {
         }
 
         setBusy(true);
-        const result = isSignup
-            ? signUp(values.name, values.email, values.password)
-            : signIn(values.email, values.password);
+        const result = await (isSignup
+            ? signUp(values.name, values.email, values.password, values.role)
+            : signIn(values.email, values.password));
 
         if (!result.ok) {
             setFormError(result.error);
@@ -102,7 +100,8 @@ export function AuthForm({ mode, next }: AuthFormProps) {
             return;
         }
 
-        router.push(target);
+        const destination = next ? target : result.user.role === "admin" ? "/admin" : result.user.role === "seller" ? "/seller" : target;
+        router.push(destination);
     }
 
     const switchHref = isSignup
@@ -185,6 +184,23 @@ export function AuthForm({ mode, next }: AuthFormProps) {
                             </div>
                         )}
 
+                        {isSignup && (
+                            <div className="oi-field">
+                                <label className="oi-field__label" htmlFor="auth-role">
+                                    Account type
+                                </label>
+                                <select
+                                    id="auth-role"
+                                    className="oi-input"
+                                    value={values.role}
+                                    onChange={(event) => update("role", event.target.value as SignupRole)}
+                                >
+                                    <option value="CUSTOMER">Customer — buy and track orders</option>
+                                    <option value="SELLER">Seller — list products and manage a shop</option>
+                                </select>
+                            </div>
+                        )}
+
                         <div className="oi-field">
                             <label className="oi-field__label" htmlFor="auth-email">
                                 Email address
@@ -217,7 +233,7 @@ export function AuthForm({ mode, next }: AuthFormProps) {
                                     className="oi-input"
                                     type={showPassword ? "text" : "password"}
                                     autoComplete={isSignup ? "new-password" : "current-password"}
-                                    placeholder="At least 6 characters"
+                                    placeholder={isSignup ? "At least 8 characters" : "Your password"}
                                     value={values.password}
                                     onChange={(event) => update("password", event.target.value)}
                                     aria-invalid={Boolean(errors.password)}
@@ -241,6 +257,12 @@ export function AuthForm({ mode, next }: AuthFormProps) {
                                 </small>
                             )}
                         </div>
+
+                        {!isSignup && (
+                            <p className="oi-auth__forgot">
+                                <Link href="/auth/forgot-password">Forgot your password?</Link>
+                            </p>
+                        )}
 
                         {isSignup && (
                             <>
@@ -303,25 +325,7 @@ export function AuthForm({ mode, next }: AuthFormProps) {
                         </Link>
                     </p>
 
-                    <div className="oi-auth__demo">
-                        <div>
-                            <b>Preview authentication</b>
-                            <p>
-                                This phase stores accounts in your browser. Log in with{" "}
-                                <code>demo@oilinga.com</code> and <code>oilinga</code>, or create
-                                an account.
-                            </p>
-                        </div>
-                        {!isSignup && (
-                            <button
-                                type="button"
-                                className="oi-auth__demo-btn"
-                                onClick={fillDemo}
-                            >
-                                Use demo account
-                            </button>
-                        )}
-                    </div>
+                    <div className="oi-auth__demo"><div><b>Your account, available anywhere</b><p>Sign in to keep your profile, orders, cart and wishlist connected across devices.</p></div></div>
                 </div>
             </div>
         </section>

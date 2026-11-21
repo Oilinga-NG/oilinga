@@ -1,36 +1,24 @@
 import type { Review } from "./types";
+import { apiFetch } from "@/lib/api-client";
+import { mapReview } from "@/lib/backend-mappers";
 
-export const REVIEWS_KEY = "oilinga_reviews";
-
-export function readReviews(): Review[] {
-    if (typeof window === "undefined") return [];
-    try {
-        const raw = window.localStorage.getItem(REVIEWS_KEY);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as Review[]) : [];
-    } catch {
-        return [];
-    }
+export async function readReviews(): Promise<Review[]> {
+    return (await apiFetch<Record<string, unknown>[]>("/reviews?mine=true")).map(mapReview);
 }
 
-export function writeReview(r: Review): void {
-    const current = readReviews();
-    const updated = [...current, r];
-    try {
-        window.localStorage.setItem(REVIEWS_KEY, JSON.stringify(updated));
-    } catch {
-        // Storage may be unavailable in private browsing.
-    }
+export async function readReviewsForMyShop(): Promise<Review[]> {
+    return (await apiFetch<Record<string, unknown>[]>("/reviews?myShop=true")).map(mapReview);
 }
 
-export function reviewsForProduct(slug: string): Review[] {
-    return readReviews().filter((r) => r.productSlug === slug);
+export async function reviewsForProduct(slug: string): Promise<Review[]> {
+    return (await apiFetch<Record<string, unknown>[]>(`/reviews?targetType=PRODUCT&targetId=${encodeURIComponent(slug)}`)).map(mapReview);
 }
 
-export function averageRating(slug: string): number | null {
-    const reviews = reviewsForProduct(slug);
-    if (reviews.length === 0) return null;
-    const sum = reviews.reduce((acc, r) => acc + r.rating, 0);
-    return sum / reviews.length;
+export async function reviewsForShop(slug: string): Promise<Review[]> {
+    return (await apiFetch<Record<string, unknown>[]>(`/reviews?targetType=SHOP&targetId=${encodeURIComponent(slug)}`)).map(mapReview);
+}
+
+export async function writeReview(review: Review): Promise<Review> {
+    const result = await apiFetch<Record<string, unknown>>("/reviews", { method: "POST", body: JSON.stringify({ targetType: review.targetType === "shop" ? "SHOP" : "PRODUCT", targetId: review.targetId ?? review.productSlug, rating: review.rating, text: review.text }) });
+    return mapReview(result) as Review;
 }

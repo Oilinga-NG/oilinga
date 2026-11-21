@@ -1,13 +1,14 @@
+"use client";
+
 import Link from "next/link";
 import type { Shop } from "@/lib/data";
-import { productsForShop } from "@/lib/data";
 import { cn } from "@/lib/cn";
 import { Badge } from "@/components/ui/Badge";
 import { Icon } from "@/components/ui/Icon";
-import { StarRating } from "@/components/ui/StarRating";
+import { LiveRating } from "@/components/ui/LiveRating";
 
 export function ShopCard({ shop }: { shop: Shop }) {
-    const count = productsForShop(shop.slug).length;
+    const count = shop.productsCount;
 
     return (
         <article className="oi-shop-card">
@@ -38,12 +39,11 @@ export function ShopCard({ shop }: { shop: Shop }) {
             <div className="oi-shop-card__meta">
                 <Icon name="pin" size={13} />
                 <span>{shop.location}</span>
-                <span className="oi-shop-card__dot" aria-hidden="true" />
-                <span>Since {shop.since}</span>
+                {shop.since && <><span className="oi-shop-card__dot" aria-hidden="true" /><span>Since {shop.since}</span></>}
             </div>
 
             <div className="oi-shop-card__footer">
-                <StarRating rating={shop.rating} reviews={shop.reviews} />
+                <LiveRating targetType="shop" targetId={shop.slug} fallback={{ rating: shop.rating, reviews: shop.reviews }} />
                 <span className="oi-shop-card__count">
                     {count} {count === 1 ? "product" : "products"}
                 </span>

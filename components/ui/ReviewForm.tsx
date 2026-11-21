@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { writeReview } from "@/lib/reviews";
@@ -10,17 +10,21 @@ export interface ReviewFormProps {
     productSlug: string;
     productName: string;
     authorName: string;
+    targetType?: "product" | "shop";
+    targetId?: string;
     onSubmit?: () => void;
 }
 
-export function ReviewForm({ productSlug, productName, authorName, onSubmit }: ReviewFormProps) {
+export function ReviewForm({ productSlug, productName, authorName, targetType = "product", targetId, onSubmit }: ReviewFormProps) {
     const notify = useToast();
+    const textId = `review-text-${useId().replace(/:/g, "")}`;
     const [rating, setRating] = useState(0);
     const [hovered, setHovered] = useState(0);
     const [text, setText] = useState("");
     const [error, setError] = useState("");
+    const [submitting, setSubmitting] = useState(false);
 
-    function handleSubmit(e: React.FormEvent) {
+    async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
         setError("");
 
@@ -33,27 +37,18 @@ export function ReviewForm({ productSlug, productName, authorName, onSubmit }: R
             return;
         }
 
-        writeReview({
-            id: crypto.randomUUID(),
-            productSlug,
-            productName,
-            rating,
-            text: text.trim(),
-            date: new Date().toISOString(),
-            authorName,
-        });
-
-        notify("Review submitted");
-        setRating(0);
-        setHovered(0);
-        setText("");
-        onSubmit?.();
+        setSubmitting(true);
+        try {
+            await writeReview({ id: crypto.randomUUID(), targetType, targetId: targetId ?? productSlug, productSlug, productName, rating, text: text.trim(), date: new Date().toISOString(), authorName });
+            notify("Review submitted"); setRating(0); setHovered(0); setText(""); onSubmit?.();
+        } catch (submitError) { setError(submitError instanceof Error ? submitError.message : "Could not submit your review."); }
+        finally { setSubmitting(false); }
     }
 
     const displayRating = hovered || rating;
 
     return (
-        <form className="oi-review-form" onSubmit={handleSubmit} aria-label="Write a review">
+        <form className="oi-review-form" onSubmit={handleSubmit} aria-label={`Write a ${targetType} review`}>
             <div className="oi-form-group">
                 <span className="oi-form-label">Your rating</span>
                 <div className="oi-star-picker" role="group" aria-label="Rating">
@@ -78,16 +73,16 @@ export function ReviewForm({ productSlug, productName, authorName, onSubmit }: R
             </div>
 
             <div className="oi-form-group">
-                <label htmlFor="review-text" className="oi-form-label">
-                    Your review
+                <label htmlFor={textId} className="oi-form-label">
+                    Your comments about this {targetType}
                 </label>
                 <textarea
-                    id="review-text"
+                    id={textId}
                     className="oi-form-input"
                     rows={4}
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    placeholder="Share your experience with this product…"
+                    placeholder={`Share your experience with this ${targetType}…`}
                 />
             </div>
 
@@ -97,8 +92,8 @@ export function ReviewForm({ productSlug, productName, authorName, onSubmit }: R
                 </p>
             )}
 
-            <Button type="submit" variant="primary" size="sm">
-                Submit review
+            <Button type="submit" variant="primary" size="sm" disabled={submitting}>
+                {submitting ? "Submitting…" : "Submit review"}
             </Button>
         </form>
     );

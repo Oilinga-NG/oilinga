@@ -3,6 +3,9 @@ import { AuthProvider } from "@/components/auth/AuthProvider";
 import { CartProvider } from "@/lib/cart-context";
 import { WishlistProvider } from "@/lib/wishlist-context";
 import { ToastProvider } from "@/components/ui/Toast";
+import { ApiProvider } from "@/components/providers/ApiProvider";
+import { RatingStatsProvider } from "@/components/providers/RatingStatsProvider";
+import { MarketplaceDataProvider } from "@/components/providers/MarketplaceDataProvider";
 import "./globals.css";
 
 const description =
@@ -88,13 +91,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     return (
         <html lang="en">
             <body>
-                <ToastProvider>
+                <ApiProvider><RatingStatsProvider><MarketplaceDataProvider><ToastProvider>
                     <AuthProvider>
                         <WishlistProvider>
                             <CartProvider>{children}</CartProvider>
                         </WishlistProvider>
                     </AuthProvider>
-                </ToastProvider>
+                </ToastProvider></MarketplaceDataProvider></RatingStatsProvider></ApiProvider>
             </body>
         </html>
     );

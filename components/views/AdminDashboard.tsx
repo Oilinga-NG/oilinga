@@ -1,0 +1,229 @@
+"use client";
+
+import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Logo } from "@/components/brand/Logo";
+import { Icon } from "@/components/ui/Icon";
+import type { CustomerOrder } from "@/lib/types";
+import { readBackendData, mutateBackendData } from "@/lib/backend-client";
+import type { DatabaseShop } from "@/lib/marketplace-contracts";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { apiFetch } from "@/lib/api-client";
+import { LoadingState } from "@/components/ui/LoadingState";
+import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
+import type { Category } from "@/lib/data";
+
+type AdminProduct = { id?: string; name: string; price: string; size: string; stock: string; status?: "Active" | "Draft" };
+type AdminShop = Omit<DatabaseShop, "name" | "status" | "products"> & { name: string; shop: string; shopStatus?: "Active" | "Paused"; products: AdminProduct[] };
+type Tab = "overview" | "users" | "sellers" | "products" | "orders" | "finance" | "subscriptions";
+type AdminRole = "CUSTOMER" | "SELLER" | "ADMIN";
+type AdminUser = {
+    id: string;
+    name: string;
+    email: string;
+    role: AdminRole;
+    status: "ACTIVE" | "INACTIVE" | "SUSPENDED";
+    emailVerifiedAt: string | null;
+    createdAt: string;
+};
+type PaymentState = Record<string, "Pending" | "Confirmed" | "Failed" | "Refunded">;
+type Settlement = { id: string; amount: number; date: string; status: "Recorded locally" };
+const tabs: { id: Tab; label: string; icon: "grid" | "shield" | "store" | "box" | "receipt" | "wallet" | "sparkle" }[] = [
+    { id: "overview", label: "Overview", icon: "grid" }, { id: "users", label: "Users & roles", icon: "shield" }, { id: "sellers", label: "Seller verification", icon: "store" },
+    { id: "products", label: "Shops & products", icon: "box" }, { id: "orders", label: "Orders & payments", icon: "receipt" },
+    { id: "finance", label: "Commission & settlements", icon: "wallet" }, { id: "subscriptions", label: "Subscriptions", icon: "sparkle" },
+];
+
+function money(value: number) { return `₦${value.toLocaleString("en-NG", { maximumFractionDigits: 2 })}`; }
+
+export function AdminDashboard() {
+    const { user, ready: authReady } = useAuth();
+    const router = useRouter();
+    const { refresh: refreshMarketplace } = useMarketplaceData();
+    const [tab, setTab] = useState<Tab>("overview");
+    const [shops, setShops] = useState<AdminShop[]>([]);
+    const [selectedShopSlug, setSelectedShopSlug] = useState("");
+    const [orders, setOrders] = useState<CustomerOrder[]>([]);
+    const [payments, setPayments] = useState<PaymentState>({});
+    const [settlements, setSettlements] = useState<Settlement[]>([]);
+    const [commissionRate, setCommissionRate] = useState("0");
+    const [categories, setCategories] = useState<Category[]>([]);
+    const [categoryName, setCategoryName] = useState("");
+    const [categoryCaption, setCategoryCaption] = useState("");
+    const [categoryGlyph, setCategoryGlyph] = useState("");
+    const [categoryError, setCategoryError] = useState("");
+    const [users, setUsers] = useState<AdminUser[]>([]);
+    const [newUser, setNewUser] = useState({ name: "", email: "", password: "", role: "CUSTOMER" as AdminRole, emailVerified: false });
+    const [userError, setUserError] = useState("");
+    const [userNotice, setUserNotice] = useState("");
+    const [ready, setReady] = useState(false);
+
+    useEffect(() => {
+        if (!authReady) return;
+        if (!user) {
+            router.replace(`/auth/login?next=${encodeURIComponent("/admin")}`);
+            return;
+        }
+        if (user.role !== "admin") {
+            router.replace(user.role === "seller" ? "/seller" : "/account");
+            return;
+        }
+        let cancelled = false;
+        void readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; settlements: Settlement[]; settings: { commissionRate: number } }>("admin")
+            .then(data => { if (!cancelled) { const records = data.shops.map(record => ({ ...record, shop: record.name, shopStatus: record.shopStatus })); setShops(records); setSelectedShopSlug(records[0]?.slug ?? ""); setCategories(data.categories ?? []); setOrders(data.orders); setPayments(data.payments); setSettlements(data.settlements); setCommissionRate(String(data.settings.commissionRate ?? 0)); } })
+            .catch(error => console.error("Admin data could not be loaded", error))
+            .finally(() => { if (!cancelled) setReady(true); });
+        return () => { cancelled = true; };
+    }, [authReady, user, router]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin") return;
+        let cancelled = false;
+        void apiFetch<{ items: AdminUser[] }>("/admin/users?limit=100")
+            .then(data => { if (!cancelled) setUsers(data.items); })
+            .catch(error => { if (!cancelled) setUserError(error instanceof Error ? error.message : "Could not load users."); });
+        return () => { cancelled = true; };
+    }, [authReady, user]);
+
+    function saveShop(next: AdminShop) {
+        setShops(current => current.map(item => item.slug === next.slug ? next : item));
+        const { shop: label, shopStatus, ...fields } = next;
+        const record = { ...fields, name: label, status: shopStatus ?? "Active" };
+        void mutateBackendData("admin-upsert-shop", { shop: record }).catch(error => console.error("Shop update failed", error));
+    }
+    function saveOrders(next: CustomerOrder[]) { setOrders(next); void mutateBackendData("replace-orders", { orders: next }).catch(error => console.error("Order update failed", error)); }
+    function setPayment(orderId: string, status: PaymentState[string]) {
+        const next = { ...payments, [orderId]: status }; setPayments(next); void mutateBackendData("set-payment", { orderId, status }).catch(error => console.error("Payment status update failed", error));
+    }
+    function saveCommission(value: string) {
+        setCommissionRate(value); void mutateBackendData("set-settings", { settings: { commissionRate: Number(value) || 0 } }).catch(error => console.error("Commission setting update failed", error));
+    }
+    async function addCategory(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const name = categoryName.trim();
+        const id = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        if (!id || categories.some(category => category.id === id)) { setCategoryError("Enter a unique category name."); return; }
+        setCategoryError("");
+        try {
+            const result = await mutateBackendData<{ category: Category }>("upsert-category", { category: { id, name, caption: categoryCaption.trim() || name, glyph: categoryGlyph.trim() || "🫙" } });
+            setCategories(current => [...current, result.category]);
+            setCategoryName(""); setCategoryCaption(""); setCategoryGlyph("");
+            await refreshMarketplace();
+        } catch (error) { setCategoryError(error instanceof Error ? error.message : "Could not add this category."); }
+    }
+
+    async function saveUser(id: string, patch: Partial<Pick<AdminUser, "name" | "role" | "status">> & { emailVerified?: boolean }) {
+        setUserError("");
+        try {
+            const updated = await apiFetch<AdminUser>(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+            setUsers(current => current.map(item => item.id === id ? { ...item, ...updated } : item));
+            setUserNotice("User updated.");
+        } catch (error) { setUserError(error instanceof Error ? error.message : "Could not update this user."); }
+    }
+
+    async function createUser(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        setUserError("");
+        try {
+            const result = await apiFetch<{ user: AdminUser }>("/admin/users", {
+                method: "POST",
+                body: JSON.stringify(newUser)
+            });
+            setUsers(current => [result.user, ...current]);
+            setNewUser({ name: "", email: "", password: "", role: "CUSTOMER", emailVerified: false });
+            setUserNotice("Account created.");
+        } catch (error) { setUserError(error instanceof Error ? error.message : "Could not create this account."); }
+    }
+
+    async function sendPasswordReset(id: string) {
+        setUserError("");
+        try {
+            const result = await apiFetch<{ devToken?: string }>(`/admin/users/${id}/send-password-reset`, { method: "POST" });
+            setUserNotice(result.devToken ? "Reset link ready in development mode." : "Password reset email sent.");
+        } catch (error) { setUserError(error instanceof Error ? error.message : "Could not send a reset link."); }
+    }
+
+    if (!authReady || !ready || !user || user.role !== "admin") return <LoadingState label="Checking administrator access" />;
+    const shop = shops.find(item => item.slug === selectedShopSlug) ?? shops[0] ?? null;
+    const deliveredGross = orders.filter(order => order.status === "Delivered").reduce((sum, order) => sum + order.subtotal, 0);
+    const rate = Math.max(0, Number(commissionRate) || 0);
+    const commission = deliveredGross * rate / 100;
+    const settled = settlements.reduce((sum, item) => sum + item.amount, 0);
+    const unsettled = Math.max(0, deliveredGross - commission - settled);
+    const title = tabs.find(item => item.id === tab)?.label ?? "Overview";
+
+    return <section className="oi-view oi-container oi-admin">
+        <div className="oi-dashboard oi-admin__layout">
+            <aside className="oi-sidebar">
+                <div className="oi-sidebar__brand"><Logo size="sm" alt="Oilinga" /></div>
+                <small className="oi-sidebar__label">ADMINISTRATION</small>
+                <nav className="oi-sidebar__nav" aria-label="Admin navigation">{tabs.map(item => <button key={item.id} type="button" className={`oi-sidebar__link${tab === item.id ? " is-active" : ""}`} aria-current={tab === item.id ? "page" : undefined} onClick={() => setTab(item.id)}><Icon name={item.icon} size={16} />{item.label}</button>)}</nav>
+                <div className="oi-sidebar__profile"><span className="oi-avatar">AD</span><div className="oi-sidebar__profile-text"><b className="oi-sidebar__profile-name">Admin workspace</b><small className="oi-sidebar__profile-meta">Local prototype</small></div></div>
+            </aside>
+            <div className="oi-dashboard__content oi-admin__content">
+                <header className="oi-admin__header"><div><span className="oi-eyebrow oi-eyebrow--green">OILINGA ADMIN</span><h1>{title}</h1><p>Review shop operations and marketplace records.</p></div><Link className="oi-btn oi-btn--outline" href="/">View marketplace <Icon name="arrow-right" size={15} /></Link></header>
+                <div className="oi-admin__notice"><Icon name="shield" size={17} /><p>Administrator access is role-gated, and seller verification is managed here. Payment processing, settlements and subscription billing are not live.</p></div>
+
+                {tab === "overview" && <>
+                    <div className="oi-admin__metrics"><article><span>Registered shops</span><strong>{shops.length}</strong></article><article><span>Awaiting verification</span><strong>{shops.filter(item => !item.verified).length}</strong></article><article><span>Products</span><strong>{shops.reduce((count, item) => count + item.products.length, 0)}</strong></article><article><span>Orders</span><strong>{orders.length}</strong></article><article><span>Delivered order value</span><strong>{money(deliveredGross)}</strong></article><article><span>Settlement estimate</span><strong>{money(unsettled)}</strong></article></div>
+                    <section className="oi-admin__panel"><h2>Needs attention</h2>{shops.filter(item => !item.verified).length ? shops.filter(item => !item.verified).map(item => <div className="oi-admin__attention" key={item.slug}><div><b>{item.shop}</b><span>{item.owner} · {item.location}</span></div><button className="oi-btn oi-btn--primary oi-btn--sm" type="button" onClick={() => { setSelectedShopSlug(item.slug); setTab("sellers"); }}>Review seller</button></div>) : <p className="oi-admin__muted">No seller verification is pending.</p>}{orders.length === 0 && <p className="oi-admin__muted">There are no local order records yet.</p>}</section>
+                </>}
+
+                {tab === "users" && <>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Accounts and roles</h2><p>Manage customer, seller and administrator access.</p></div></div>
+                        {userError && <p className="oi-form-error" role="alert">{userError}</p>}
+                        {userNotice && <p className="oi-admin__muted" role="status">{userNotice}</p>}
+                        <div className="oi-admin__table-wrap">
+                            <table className="oi-admin__table"><thead><tr><th>User</th><th>Role</th><th>Email</th><th>Status</th><th>Recovery</th></tr></thead><tbody>
+                                {users.map(item => <tr key={item.id}>
+                                    <td><b>{item.name}</b><small>{item.emailVerifiedAt ? "Email verified" : "Email unverified"}</small></td>
+                                    <td><select aria-label={`Role for ${item.email}`} value={item.role} onChange={event => saveUser(item.id, { role: event.target.value as AdminRole })}><option>CUSTOMER</option><option>SELLER</option><option>ADMIN</option></select></td>
+                                    <td>{item.email}</td>
+                                    <td><select aria-label={`Status for ${item.email}`} value={item.status} onChange={event => saveUser(item.id, { status: event.target.value as AdminUser["status"] })}><option>ACTIVE</option><option>INACTIVE</option><option>SUSPENDED</option></select></td>
+                                    <td><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => sendPasswordReset(item.id)}>Send reset</button></td>
+                                </tr>)}
+                            </tbody></table>
+                            {users.length === 0 && <p className="oi-admin__muted">No accounts found.</p>}
+                        </div>
+                    </section>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Provision an account</h2><p>Create a customer, seller or administrator account with a hashed password.</p></div></div>
+                        <form className="oi-admin__category-form" onSubmit={createUser}>
+                            <label>Full name<input required value={newUser.name} onChange={event => setNewUser({ ...newUser, name: event.target.value })} placeholder="Amina Okafor" /></label>
+                            <label>Email address<input required type="email" value={newUser.email} onChange={event => setNewUser({ ...newUser, email: event.target.value })} placeholder="amina@example.com" /></label>
+                            <label>Temporary password<input required type="password" minLength={12} value={newUser.password} onChange={event => setNewUser({ ...newUser, password: event.target.value })} placeholder="At least 12 characters" /></label>
+                            <label>Role<select value={newUser.role} onChange={event => setNewUser({ ...newUser, role: event.target.value as AdminRole })}><option>CUSTOMER</option><option>SELLER</option><option>ADMIN</option></select></label>
+                            <label className="oi-check"><input type="checkbox" checked={newUser.emailVerified} onChange={event => setNewUser({ ...newUser, emailVerified: event.target.checked })} /><span>Mark this email as verified</span></label>
+                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit">Create account</button>
+                        </form>
+                    </section>
+                </>}
+
+                {tab === "sellers" && <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Seller applications</h2><p>Review the registered shops and verify their seller profiles.</p></div></div>{shops.length ? shops.map(item => <article className="oi-admin__seller-card" key={item.slug}><div className="oi-admin__seller-avatar">{item.shop.slice(0, 2).toUpperCase()}</div><div className="oi-admin__seller-main"><h3>{item.shop}</h3><p>{item.owner} · {item.location}</p><small>{item.tagline || "No shop introduction provided."}</small></div><span className={`oi-admin__badge${item.verified ? " is-approved" : ""}`}>{item.verified ? "Verified" : "Pending review"}</span><button className="oi-btn oi-btn--primary oi-btn--sm" type="button" onClick={() => saveShop({ ...item, verified: !item.verified })}>{item.verified ? "Revoke verification" : "Verify seller"}</button></article>) : <p className="oi-admin__muted">No seller shops have been registered.</p>}</section>}
+
+                {tab === "products" && <>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Product categories</h2><p>Manage the categories sellers can choose when they add products.</p></div></div>
+                        <div className="oi-admin__category-list">{categories.map(category => <span className="oi-admin__category-chip" key={category.id}><span aria-hidden="true">{category.glyph}</span><b>{category.name}</b><small>{category.caption}</small></span>)}</div>
+                        <form className="oi-admin__category-form" onSubmit={addCategory}>
+                            <label>Category name<input required value={categoryName} onChange={event => setCategoryName(event.target.value)} placeholder="e.g. Shea Oil" /></label>
+                            <label>Description<input value={categoryCaption} onChange={event => setCategoryCaption(event.target.value)} placeholder="Short category description" /></label>
+                            <label>Icon<input value={categoryGlyph} onChange={event => setCategoryGlyph(event.target.value)} maxLength={8} placeholder="🫙" /></label>
+                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit">Add category</button>
+                        </form>
+                        {categoryError && <p className="oi-form-error" role="alert">{categoryError}</p>}
+                    </section>
+                    <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Shop and product management</h2><p>Pause a storefront or review individual listings.</p></div>{shops.length > 1 && <label className="oi-admin__rate">Select shop<select value={shop?.slug ?? ""} onChange={event => setSelectedShopSlug(event.target.value)}>{shops.map(item => <option key={item.slug} value={item.slug}>{item.shop}</option>)}</select></label>}</div>{shop ? <><div className="oi-admin__shop-control"><div><b>{shop.shop}</b><span>{shop.location} · {shop.published ? "Published" : "Unpublished"}</span></div><label>Shop status<select value={shop.shopStatus ?? "Active"} onChange={event => saveShop({ ...shop, shopStatus: event.target.value as AdminShop["shopStatus"] })}><option>Active</option><option>Paused</option></select></label></div><div className="oi-admin__table-wrap"><table className="oi-admin__table"><thead><tr><th>Product</th><th>Price</th><th>Stock</th><th>Listing status</th></tr></thead><tbody>{shop.products.map((item, index) => <tr key={item.id ?? `${item.name}-${index}`}><td><b>{item.name}</b><small>{item.size}</small></td><td>{money(Number(item.price) || 0)}</td><td>{item.stock}</td><td><select aria-label={`${item.name} listing status`} value={item.status ?? "Active"} onChange={event => saveShop({ ...shop, products: shop.products.map((product, productIndex) => productIndex === index ? { ...product, status: event.target.value as AdminProduct["status"] } : product) })}><option>Active</option><option>Draft</option></select></td></tr>)}</tbody></table>{shop.products.length === 0 && <p className="oi-admin__muted">No seller products are registered.</p>}</div></> : <p className="oi-admin__muted">No shop is available to manage.</p>}</section>
+                </>}
+
+                {tab === "orders" && <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Orders and payment review</h2><p>Payment status is a manual local record; no payment processor is connected.</p></div></div>{orders.length ? <div className="oi-admin__table-wrap"><table className="oi-admin__table"><thead><tr><th>Order</th><th>Customer</th><th>Total</th><th>Fulfilment</th><th>Payment</th></tr></thead><tbody>{orders.map(order => <tr key={order.id}><td><b>{order.id}</b><small>{new Date(order.date).toLocaleDateString()}</small></td><td>{order.delivery.name}<small>{order.payment}</small></td><td>{money(order.subtotal)}</td><td><select aria-label={`Fulfilment status for ${order.id}`} value={order.status} onChange={event => saveOrders(orders.map(item => item.id === order.id ? { ...item, status: event.target.value } : item))}>{["Processing", "Shipped", "Delivered", "Cancelled"].map(status => <option key={status}>{status}</option>)}</select></td><td><select aria-label={`Payment status for ${order.id}`} value={payments[order.id] ?? "Pending"} onChange={event => setPayment(order.id, event.target.value as PaymentState[string])}>{["Pending", "Confirmed", "Failed", "Refunded"].map(status => <option key={status}>{status}</option>)}</select></td></tr>)}</tbody></table></div> : <div className="oi-admin__empty"><Icon name="receipt" size={24} /><h3>No orders to review</h3><p>Marketplace orders saved in this browser will appear here.</p></div>}</section>}
+
+                {tab === "finance" && <><section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Commission and settlements</h2><p>Estimate fees from delivered order records.</p></div><label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label></div><div className="oi-admin__metrics oi-admin__metrics--finance"><article><span>Delivered order value</span><strong>{money(deliveredGross)}</strong></article><article><span>Estimated commission</span><strong>{money(commission)}</strong></article><article><span>Estimated seller balance</span><strong>{money(Math.max(0, deliveredGross - commission))}</strong></article><article><span>Unsettled estimate</span><strong>{money(unsettled)}</strong></article></div><button className="oi-btn oi-btn--primary" type="button" disabled={unsettled <= 0} onClick={() => { const settlement = { id: `SET-${Date.now()}`, amount: unsettled, date: new Date().toISOString(), status: "Recorded locally" as const }; setSettlements([settlement, ...settlements]); void mutateBackendData("create-settlement", { settlement }).catch(error => console.error("Settlement record failed", error)); }}>Record settlement</button><p className="oi-admin__muted">This records an admin note only. It does not move money or initiate a payout.</p></section><section className="oi-admin__panel"><h2>Settlement records</h2>{settlements.length ? settlements.map(item => <div className="oi-admin__attention" key={item.id}><div><b>{item.id}</b><span>{new Date(item.date).toLocaleString()}</span></div><strong>{money(item.amount)}</strong><span className="oi-admin__badge">{item.status}</span></div>) : <p className="oi-admin__muted">No settlement records.</p>}</section></>}
+
+                {tab === "subscriptions" && <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Subscription management</h2><p>Subscription billing is not connected; changes here are local status records.</p></div></div>{shops.length ? shops.map(item => <div className="oi-admin__shop-control" key={item.slug}><div><b>{item.shop}</b><span>Plan: {item.plan ?? "Free"}</span></div><label>Subscription status<select value={item.subscriptionStatus ?? "Active"} onChange={event => saveShop({ ...item, subscriptionStatus: event.target.value as AdminShop["subscriptionStatus"] })}><option>Active</option><option>Paused</option><option>Cancelled</option></select></label></div>) : <p className="oi-admin__muted">No subscriptions are registered.</p>}<div className="oi-admin__plan-note"><Icon name="shield" size={17} /><span>Plan pricing, recurring charges and invoices need a billing provider before they can be administered here.</span></div></section>}
+            </div>
+        </div>
+    </section>;
+}

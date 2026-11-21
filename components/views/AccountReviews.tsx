@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ButtonLink } from "@/components/ui/ButtonLink";
@@ -9,16 +9,29 @@ import { ReviewForm } from "@/components/ui/ReviewForm";
 import { Button } from "@/components/ui/Button";
 import { AccountSidebarNav } from "@/components/auth/AccountSidebarNav";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { readReviews } from "@/lib/reviews";
-import { products } from "@/lib/data";
+import { readReviews, readReviewsForMyShop } from "@/lib/reviews";
+import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
 import type { Review } from "@/lib/types";
+import { useRatingStats } from "@/components/providers/RatingStatsProvider";
+import { LoadingState } from "@/components/ui/LoadingState";
 
 export function AccountReviews() {
+    return (
+        <Suspense fallback={<LoadingState label="Loading reviews" />}>
+            <AccountReviewsInner />
+        </Suspense>
+    );
+}
+
+function AccountReviewsInner() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const { user, ready } = useAuth();
+    const { refresh: refreshRatingStats } = useRatingStats();
+    const { products, loading: productsLoading } = useMarketplaceData();
 
     const [reviews, setReviews] = useState<Review[]>([]);
+    const [reviewsError, setReviewsError] = useState<string | null>(null);
     const [showForm, setShowForm] = useState(false);
     const [selectedSlug, setSelectedSlug] = useState(
         () => searchParams.get("product") ?? "",
@@ -26,42 +39,51 @@ export function AccountReviews() {
 
     useEffect(() => {
         if (ready && !user) {
-            router.replace("/login?next=/account/reviews");
+            router.replace("/auth/login?next=%2Faccount%2Freviews");
         }
     }, [ready, user, router]);
 
     useEffect(() => {
         if (!user) return;
-        setReviews(readReviews());
-    }, [user]);
+        setReviewsError(null);
+        const loadReviews = user.role === "seller" ? readReviewsForMyShop : readReviews;
+        void loadReviews().then(setReviews).catch(error => {
+            console.error("Reviews could not be loaded", error);
+            setReviewsError(error instanceof Error ? error.message : "Reviews could not be loaded.");
+        });
+    }, [user?.id, user?.role]);
 
     // Pre-select product from query param
     useEffect(() => {
         const slug = searchParams.get("product");
-        if (slug) {
+        if (slug && user?.role !== "seller") {
             setSelectedSlug(slug);
             setShowForm(true);
+        } else if (user?.role === "seller") {
+            setSelectedSlug("");
+            setShowForm(false);
         }
-    }, [searchParams]);
+    }, [searchParams, user?.role]);
 
     if (!ready) {
-        return (
-            <section className="oi-view oi-container" aria-live="polite">
-                <div className="oi-account__loading">Loading…</div>
-            </section>
-        );
+        return <LoadingState label="Loading reviews" />;
     }
 
     if (!user) {
-        return (
-            <section className="oi-view oi-container" aria-live="polite">
-                <div className="oi-account__loading">Redirecting you to sign in…</div>
-            </section>
-        );
+        return <LoadingState label="Redirecting to sign in" />;
     }
 
-    function refreshReviews() {
-        setReviews(readReviews());
+    async function refreshReviews() {
+        if (!user) return;
+        try {
+            const loadReviews = user.role === "seller" ? readReviewsForMyShop : readReviews;
+            setReviews(await loadReviews());
+            setReviewsError(null);
+        } catch (error) {
+            console.error("Reviews could not be refreshed", error);
+            setReviewsError(error instanceof Error ? error.message : "Reviews could not be refreshed.");
+        }
+        void refreshRatingStats().catch(error => console.error("Rating totals could not be refreshed", error));
         setShowForm(false);
         setSelectedSlug("");
     }
@@ -76,9 +98,9 @@ export function AccountReviews() {
                 <div className="oi-dashboard__content">
                     <div className="oi-card-head">
                         <h1 id="reviews-title" className="oi-page-title">
-                            Your reviews
+                            {user.role === "seller" ? "Reviews for your shop and products" : "Your reviews"}
                         </h1>
-                        {!showForm && (
+                        {user.role !== "seller" && !showForm && (
                             <Button
                                 variant="outline"
                                 size="sm"
@@ -119,6 +141,8 @@ export function AccountReviews() {
                                 />
                             )}
 
+                            {productsLoading && <LoadingState label="Loading published products" variant="inline" />}
+                            {!productsLoading && products.length === 0 && <p className="oi-muted">There are no published products to review yet.</p>}
                             {!selectedSlug && (
                                 <Button
                                     variant="ghost"
@@ -134,14 +158,14 @@ export function AccountReviews() {
                         </div>
                     )}
 
+                    {reviewsError && <p className="oi-form-error" role="alert">{reviewsError}</p>}
+
                     {reviews.length === 0 && !showForm ? (
                         <div className="oi-wishlist-empty">
                             <p className="oi-muted">
-                                You haven&apos;t written any reviews yet.
+                                {user.role === "seller" ? "There are no reviews for your shop or products yet." : "You haven't written any reviews yet."}
                             </p>
-                            <ButtonLink href="/marketplace" variant="outline" size="sm">
-                                Browse products
-                            </ButtonLink>
+                            {user.role !== "seller" && <ButtonLink href="/marketplace" variant="outline" size="sm">Browse products</ButtonLink>}
                         </div>
                     ) : (
                         <div style={{ display: "grid", gap: "var(--space-3)" }}>
@@ -149,10 +173,10 @@ export function AccountReviews() {
                                 <article key={review.id} className="oi-review-card">
                                     <div className="oi-card-head">
                                         <Link
-                                            href={`/products/${review.productSlug}`}
+                                            href={review.targetType === "shop" ? `/shops/${review.targetId ?? review.productSlug}` : `/products/${review.targetId ?? review.productSlug}`}
                                             className="oi-link"
                                         >
-                                            {review.productName}
+                                            {review.targetType === "shop" ? `Shop: ${review.productName}` : review.productName}
                                         </Link>
                                         <small className="oi-muted">
                                             {new Date(review.date).toLocaleDateString("en-GB", {

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
-import { useRef } from "react";
+import { useState } from "react";
 import { Logo } from "@/components/brand/Logo";
 import { Icon } from "@/components/ui/Icon";
 import { cn } from "@/lib/cn";
@@ -49,11 +49,12 @@ export function AccountSidebarNav() {
     const { user, signOut } = useAuth();
     const pathname = usePathname();
     const router = useRouter();
-    const signingOut = useRef(false);
+    const [signingOut, setSigningOut] = useState(false);
 
-    function handleSignOut() {
-        signingOut.current = true;
-        signOut();
+    async function handleSignOut() {
+        if (signingOut) return;
+        setSigningOut(true);
+        await signOut();
         router.push("/");
     }
 
@@ -79,6 +80,10 @@ export function AccountSidebarNav() {
                         </Link>
                     );
                 })}
+                <button type="button" className="oi-sidebar__link oi-sidebar__signout" onClick={handleSignOut} disabled={signingOut}>
+                    <Icon name="logout" size={16} />
+                    {signingOut ? "Logging out…" : "Log out"}
+                </button>
             </nav>
             {user && (
                 <div className="oi-sidebar__profile">
@@ -87,15 +92,6 @@ export function AccountSidebarNav() {
                         <b className="oi-sidebar__profile-name">{user.name}</b>
                         <small className="oi-sidebar__profile-meta">{user.email}</small>
                     </div>
-                    <button
-                        type="button"
-                        className="oi-icon-btn"
-                        aria-label="Sign out"
-                        title="Sign out"
-                        onClick={handleSignOut}
-                    >
-                        <Icon name="logout" size={16} />
-                    </button>
                 </div>
             )}
         </aside>

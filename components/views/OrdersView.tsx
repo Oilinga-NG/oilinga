@@ -6,20 +6,9 @@ import type { CustomerOrder } from "@/lib/types";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { ButtonLink } from "@/components/ui/ButtonLink";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
-
-const ORDERS_KEY = "oilinga_orders";
-
-function readOrders(): CustomerOrder[] {
-    if (typeof window === "undefined") return [];
-    try {
-        const raw = window.localStorage.getItem(ORDERS_KEY);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as CustomerOrder[]) : [];
-    } catch {
-        return [];
-    }
-}
+import { readBackendData } from "@/lib/backend-client";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { LoadingState } from "@/components/ui/LoadingState";
 
 const statusTone: Record<string, BadgeTone> = {
     Processing: "pending",
@@ -32,15 +21,21 @@ function formatPrice(value: number): string {
 }
 
 export function OrdersView() {
+    const { user, ready } = useAuth();
     const [orders, setOrders] = useState<CustomerOrder[]>([]);
     const [hydrated, setHydrated] = useState(false);
 
     useEffect(() => {
-        setOrders(readOrders());
-        setHydrated(true);
-    }, []);
+        if (!ready) return;
+        if (!user) { setHydrated(true); setOrders([]); return; }
+        let cancelled = false;
+        void readBackendData<{ orders: CustomerOrder[] }>("orders", user?.email ? { email: user.email } : {}).then(data => { if (!cancelled) setOrders(data.orders); }).catch(error => console.error("Orders could not be loaded", error)).finally(() => { if (!cancelled) setHydrated(true); });
+        return () => { cancelled = true; };
+    }, [ready, user?.email]);
 
-    if (!hydrated) return null;
+    if (!hydrated) return <LoadingState label="Loading your orders" />;
+
+    if (!user) return <main className="oi-page"><div className="oi-cart-empty"><h1 className="oi-page-title">Sign in to view your orders</h1><p className="oi-muted">Your order history is linked to your account.</p><ButtonLink href="/auth/login?next=%2Forders" variant="primary">Sign in</ButtonLink></div></main>;
 
     if (orders.length === 0) {
         return (

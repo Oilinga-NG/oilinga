@@ -15,7 +15,6 @@ export type {
     SellerNavItem,
     Metric,
     Order,
-    ProductQuery,
 } from "./data";
 
 import type { Product } from "./data";
@@ -46,6 +45,7 @@ export interface DeliveryInfo {
 /** A placed customer order. */
 export interface CustomerOrder {
     id: string;
+    customerEmail?: string;
     date: string;
     items: CartItem[];
     subtotal: number;
@@ -57,6 +57,8 @@ export interface CustomerOrder {
 /** A product review written by a customer. */
 export interface Review {
     id: string;
+    targetType?: "product" | "shop";
+    targetId?: string;
     productSlug: string;
     productName: string;
     rating: number;

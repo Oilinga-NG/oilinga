@@ -8,7 +8,7 @@ import { ButtonLink } from "@/components/ui/ButtonLink";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { Badge } from "@/components/ui/Badge";
 import { Icon } from "@/components/ui/Icon";
-import { StarRating } from "@/components/ui/StarRating";
+import { LiveRating } from "@/components/ui/LiveRating";
 
 export function WishlistView() {
     const { items, removeFromWishlist } = useWishlist();
@@ -87,9 +87,10 @@ export function WishlistView() {
                                 <Link href={`/products/${product.slug}`}>{product.name}</Link>
                             </h3>
                             <p className="oi-product-card__meta">{product.detail}</p>
-                            <StarRating
-                                rating={product.rating}
-                                reviews={product.reviews}
+                            <LiveRating
+                                targetType="product"
+                                targetId={product.slug}
+                                fallback={{ rating: product.rating, reviews: product.reviews }}
                                 className="oi-product-card__rating"
                             />
                             <div className="oi-product-card__footer">

@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import Image from "next/image";
 import { ButtonLink } from "@/components/ui/ButtonLink";
@@ -9,14 +11,14 @@ import { SellerBanner } from "@/components/marketplace/SellerBanner";
 import { ShopGrid } from "@/components/marketplace/ShopCard";
 import { RouteSearch } from "@/components/marketplace/RouteSearch";
 import { TrustRow } from "@/components/marketplace/TrustRow";
-import {
-    categories,
-    featuredProducts,
-    featuredShops,
-    popularSearches,
-} from "@/lib/data";
+import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
+import { LoadingState } from "@/components/ui/LoadingState";
 
 export function HomeView() {
+    const { products, shops, categories, loading, error } = useMarketplaceData();
+    const popularSearches = categories.map(category => category.name);
+    const featuredProducts = products.slice(0, 4);
+    const featuredShops = shops.slice(0, 4);
     return (
         <div className="oi-view oi-container">
             <section className="oi-hero" aria-labelledby="hero-title">
@@ -55,10 +57,11 @@ export function HomeView() {
                 </div>
                 <div className="oi-hero__photo">
                     <Image
-                        src="/assets/brand/oilinga-brand-visual-reference.png"
-                        alt="Oilinga marketplace brand vision"
+                        src="/assets/background/havest.png"
+                        alt="Palm oil harvest"
                         fill
-                        style={{ objectFit: "cover", objectPosition: "42% 55%" }}
+                        style={{ objectFit: "cover", objectPosition: "center" }}
+                        priority
                     />
                 </div>
             </section>
@@ -99,7 +102,7 @@ export function HomeView() {
                     </Link>
                 }
             >
-                <ShopGrid shops={featuredShops} />
+                {loading ? <LoadingState label="Loading shops" variant="inline" /> : error ? <p className="oi-muted" role="alert">Shop data could not be loaded.</p> : featuredShops.length ? <ShopGrid shops={featuredShops} /> : <div className="oi-empty oi-empty--card"><h3>No shops yet</h3><p>Seller storefronts will appear here after they publish products.</p></div>}
             </Section>
 
             <Section
@@ -111,7 +114,7 @@ export function HomeView() {
                     </Link>
                 }
             >
-                <ProductGrid products={featuredProducts} />
+                {loading ? <LoadingState label="Loading products" variant="inline" /> : error ? <p className="oi-muted" role="alert">Product data could not be loaded.</p> : featuredProducts.length ? <ProductGrid products={featuredProducts} /> : <div className="oi-empty oi-empty--card"><h3>No products yet</h3><p>Products will appear here when sellers publish their shops.</p></div>}
             </Section>
 
             <SellerBanner />

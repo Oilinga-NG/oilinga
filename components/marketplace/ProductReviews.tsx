@@ -7,8 +7,10 @@ import { ButtonLink } from "@/components/ui/ButtonLink";
 import { StarRating } from "@/components/ui/StarRating";
 import { ReviewForm } from "@/components/ui/ReviewForm";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { reviewsForProduct, averageRating } from "@/lib/reviews";
+import { LoadingState } from "@/components/ui/LoadingState";
+import { reviewsForProduct } from "@/lib/reviews";
 import type { Review } from "@/lib/types";
+import { useRatingStats } from "@/components/providers/RatingStatsProvider";
 
 export interface ProductReviewsProps {
     productSlug: string;
@@ -17,19 +19,31 @@ export interface ProductReviewsProps {
 
 export function ProductReviews({ productSlug, productName }: ProductReviewsProps) {
     const { user } = useAuth();
+    const { refresh: refreshRatingStats } = useRatingStats();
     const [reviews, setReviews] = useState<Review[]>([]);
     const [avgRating, setAvgRating] = useState<number | null>(null);
     const [showForm, setShowForm] = useState(false);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        setReviews(reviewsForProduct(productSlug));
-        setAvgRating(averageRating(productSlug));
+        let cancelled = false;
+        setLoading(true);
+        void reviewsForProduct(productSlug).then(next => {
+            if (cancelled) return;
+            setReviews(next);
+            setAvgRating(next.length ? next.reduce((sum, review) => sum + review.rating, 0) / next.length : null);
+        }).catch(error => console.error("Product reviews could not be loaded", error)).finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
     }, [productSlug]);
 
-    function refreshReviews() {
-        setReviews(reviewsForProduct(productSlug));
-        setAvgRating(averageRating(productSlug));
-        setShowForm(false);
+    async function refreshReviews() {
+        try {
+            const next = await reviewsForProduct(productSlug);
+            setReviews(next);
+            setAvgRating(next.length ? next.reduce((sum, review) => sum + review.rating, 0) / next.length : null);
+            setShowForm(false);
+            void refreshRatingStats().catch(error => console.error("Rating totals could not be refreshed", error));
+        } catch (error) { console.error("Product reviews could not be refreshed", error); }
     }
 
     return (
@@ -45,7 +59,7 @@ export function ProductReviews({ productSlug, productName }: ProductReviewsProps
                 </h2>
             </div>
 
-            {reviews.length === 0 && (
+            {loading ? <LoadingState label="Loading product reviews" variant="inline" /> : reviews.length === 0 && (
                 <p className="oi-muted" style={{ marginBottom: "var(--space-4)" }}>
                     No reviews yet. Be the first to review this product.
                 </p>
@@ -91,7 +105,7 @@ export function ProductReviews({ productSlug, productName }: ProductReviewsProps
                         </Button>
                     ) : (
                         <p className="oi-muted">
-                            <Link href={`/login?next=/products/${productSlug}`} className="oi-link">
+                            <Link href={`/auth/login?next=${encodeURIComponent(`/products/${productSlug}`)}`} className="oi-link">
                                 Sign in
                             </Link>{" "}
                             to write a review.

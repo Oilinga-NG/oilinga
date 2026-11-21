@@ -1,47 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
-import { useAuth, type AuthUser } from "./AuthProvider";
+import { useAuth, type SessionInfo } from "./AuthProvider";
 import { AccountSidebarNav } from "./AccountSidebarNav";
-
-const ACCOUNTS_KEY = "oilinga.accounts";
-const SESSION_KEY = "oilinga.session";
-
-interface StoredAccount extends AuthUser {
-    password: string;
-}
-
-function readStoredAccounts(): StoredAccount[] {
-    if (typeof window === "undefined") return [];
-    try {
-        const raw = window.localStorage.getItem(ACCOUNTS_KEY);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as StoredAccount[]) : [];
-    } catch {
-        return [];
-    }
-}
-
-function writeStoredAccounts(accounts: StoredAccount[]): void {
-    try {
-        window.localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-    } catch {
-        // Storage may be unavailable.
-    }
-}
-
-function initialsFor(name: string): string {
-    const parts = name.trim().split(/\s+/).filter(Boolean);
-    return (parts[0]?.[0] ?? "O").concat(parts[1]?.[0] ?? "").toUpperCase();
-}
+import { apiFetch } from "@/lib/api-client";
+import { LoadingState } from "@/components/ui/LoadingState";
 
 export function AccountSettings() {
     const router = useRouter();
-    const { user, ready } = useAuth();
+    const { user, ready, refreshUser, requestVerification, listSessions, revokeSession } = useAuth();
     const notify = useToast();
 
     const [name, setName] = useState("");
@@ -51,6 +22,13 @@ export function AccountSettings() {
     const [newPassword, setNewPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
     const [passwordError, setPasswordError] = useState("");
+
+    const [verifying, setVerifying] = useState(false);
+    const [verificationMessage, setVerificationMessage] = useState("");
+    const [devVerificationToken, setDevVerificationToken] = useState<string | null>(null);
+    const [sessions, setSessions] = useState<SessionInfo[]>([]);
+    const [sessionsLoading, setSessionsLoading] = useState(true);
+    const [sessionsError, setSessionsError] = useState("");
 
     const initialized = useRef(false);
 
@@ -67,23 +45,26 @@ export function AccountSettings() {
         }
     }, [user]);
 
+    useEffect(() => {
+        if (!ready || !user) return;
+        let cancelled = false;
+        setSessionsLoading(true);
+        void listSessions()
+            .then(rows => { if (!cancelled) setSessions(rows); })
+            .catch(error => { if (!cancelled) setSessionsError(error instanceof Error ? error.message : "Could not load sessions."); })
+            .finally(() => { if (!cancelled) setSessionsLoading(false); });
+        return () => { cancelled = true; };
+    }, [ready, user, listSessions]);
+
     if (!ready) {
-        return (
-            <section className="oi-view oi-container" aria-live="polite">
-                <div className="oi-account__loading">Loading…</div>
-            </section>
-        );
+        return <LoadingState label="Loading account settings" />;
     }
 
     if (!user) {
-        return (
-            <section className="oi-view oi-container" aria-live="polite">
-                <div className="oi-account__loading">Redirecting you to sign in…</div>
-            </section>
-        );
+        return <LoadingState label="Redirecting to sign in" />;
     }
 
-    function handleProfileSave(e: React.FormEvent) {
+    async function handleProfileSave(e: React.FormEvent) {
         e.preventDefault();
         setProfileError("");
 
@@ -92,57 +73,16 @@ export function AccountSettings() {
             return;
         }
 
-        const accounts = readStoredAccounts();
-        const idx = accounts.findIndex((a) => a.email === user!.email);
-        const newInitials = initialsFor(name);
-
-        if (idx !== -1) {
-            accounts[idx] = {
-                ...accounts[idx],
-                name: name.trim(),
-                initials: newInitials,
-            };
-            writeStoredAccounts(accounts);
-        }
-
-        // Update session
-        const updatedUser: AuthUser = {
-            ...user!,
-            name: name.trim(),
-            initials: newInitials,
-        };
         try {
-            window.localStorage.setItem(SESSION_KEY, JSON.stringify(updatedUser));
-        } catch {
-            // Ignore storage errors.
-        }
-
-        notify("Profile saved");
+            await apiFetch("/auth/me", { method: "PATCH", body: JSON.stringify({ name: name.trim() }) });
+            await refreshUser();
+            notify("Profile saved");
+        } catch (error) { setProfileError(error instanceof Error ? error.message : "Could not save profile."); }
     }
 
-    function handlePasswordChange(e: React.FormEvent) {
+    async function handlePasswordChange(e: React.FormEvent) {
         e.preventDefault();
         setPasswordError("");
-
-        const accounts = readStoredAccounts();
-
-        // Demo account special case
-        const DEMO_EMAIL = "demo@oilinga.com";
-        const DEMO_PASSWORD = "oilinga";
-
-        let storedPassword: string | undefined;
-
-        if (user!.email === DEMO_EMAIL) {
-            storedPassword = DEMO_PASSWORD;
-        } else {
-            const account = accounts.find((a) => a.email === user!.email);
-            storedPassword = account?.password;
-        }
-
-        if (!storedPassword || currentPassword !== storedPassword) {
-            setPasswordError("Current password is incorrect.");
-            return;
-        }
 
         if (newPassword.length < 8) {
             setPasswordError("New password must be at least 8 characters.");
@@ -154,16 +94,35 @@ export function AccountSettings() {
             return;
         }
 
-        const idx = accounts.findIndex((a) => a.email === user!.email);
-        if (idx !== -1) {
-            accounts[idx] = { ...accounts[idx], password: newPassword };
-            writeStoredAccounts(accounts);
-        }
+        try {
+            await apiFetch("/auth/password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) });
+            setCurrentPassword(""); setNewPassword(""); setConfirmPassword(""); notify("Password updated");
+        } catch (error) { setPasswordError(error instanceof Error ? error.message : "Could not update password."); }
+    }
 
-        setCurrentPassword("");
-        setNewPassword("");
-        setConfirmPassword("");
-        notify("Password updated");
+    async function handleResendVerification() {
+        setVerifying(true);
+        setVerificationMessage("");
+        const result = await requestVerification();
+        setVerifying(false);
+        if (!result.ok) {
+            setVerificationMessage(result.error);
+            return;
+        }
+        setDevVerificationToken(result.devToken ?? null);
+        setVerificationMessage(result.devToken ? "Verification link ready in development mode." : "Verification email sent.");
+        await refreshUser();
+        notify("Verification email sent");
+    }
+
+    async function handleRevokeSession(id: string) {
+        const result = await revokeSession(id);
+        if (!result.ok) {
+            setSessionsError(result.error);
+            return;
+        }
+        setSessions(current => current.map(session => session.id === id ? { ...session, revokedAt: new Date().toISOString() } : session));
+        notify("Session revoked");
     }
 
     return (
@@ -175,6 +134,28 @@ export function AccountSettings() {
                     <h1 id="settings-title" className="oi-page-title">
                         Account settings
                     </h1>
+
+                    {/* Verification section */}
+                    <section className="oi-form-section" aria-label="Email verification">
+                        <h2 className="oi-section-title">Email verification</h2>
+                        <p className="oi-identity-result">
+                            {user.emailVerifiedAt
+                                ? `Verified on ${new Date(user.emailVerifiedAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}.`
+                                : "Verify your email to complete your Oilinga profile."}
+                        </p>
+                        {!user.emailVerifiedAt && (
+                            <Button type="button" variant="outline" size="sm" onClick={handleResendVerification} disabled={verifying}>
+                                {verifying ? "Sending…" : "Send verification email"}
+                            </Button>
+                        )}
+                        {verificationMessage && <p className="oi-muted" role="status">{verificationMessage}</p>}
+                        {devVerificationToken && (
+                            <p className="oi-identity-hint">
+                                Development mode:{" "}
+                                <Link href={`/auth/verify-email?token=${encodeURIComponent(devVerificationToken)}`}>open your verification link</Link>.
+                            </p>
+                        )}
+                    </section>
 
                     {/* Profile section */}
                     <form
@@ -284,6 +265,40 @@ export function AccountSettings() {
                             Update password
                         </Button>
                     </form>
+
+                    {/* Sessions section */}
+                    <section className="oi-form-section" aria-label="Active sessions">
+                        <h2 className="oi-section-title">Active sessions</h2>
+                        {sessionsError && <p className="oi-form-error" role="alert">{sessionsError}</p>}
+                        {sessionsLoading ? (
+                            <p className="oi-muted">Loading sessions…</p>
+                        ) : sessions.length === 0 ? (
+                            <p className="oi-muted">No sessions available.</p>
+                        ) : (
+                            <div className="oi-session-list">
+                                {sessions.map(session => (
+                                    <div className="oi-session-row" key={session.id}>
+                                        <div>
+                                            <b>{session.current ? "This device" : "Another device"}</b>
+                                            <small>
+                                                Started {new Date(session.createdAt).toLocaleString()} ·{" "}
+                                                {session.revokedAt ? "Revoked" : `Expires ${new Date(session.expiresAt).toLocaleDateString()}`}
+                                            </small>
+                                        </div>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={session.current || Boolean(session.revokedAt)}
+                                            onClick={() => handleRevokeSession(session.id)}
+                                        >
+                                            {session.current ? "Current" : session.revokedAt ? "Revoked" : "Revoke"}
+                                        </Button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </section>
                 </div>
             </div>
         </section>

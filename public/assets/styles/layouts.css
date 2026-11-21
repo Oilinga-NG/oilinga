@@ -1,0 +1,561 @@
+/* ==========================================================================
+   Oilinga Design System — Layouts
+   Site shell, header, navigation, footer, page scaffolding.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Site shell
+   -------------------------------------------------------------------------- */
+
+.oi-site {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.oi-main {
+    flex: 1;
+    width: 100%;
+}
+
+.oi-view {
+    padding-block: var(--space-10) var(--space-20);
+    animation: oi-view-in var(--duration-slow) var(--ease-out) both;
+}
+
+@keyframes oi-view-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Logo
+   -------------------------------------------------------------------------- */
+
+.oi-logo {
+    display: inline-block;
+    flex: none;
+    line-height: 0;
+}
+
+.oi-logo img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.oi-logo--sm {
+    width: 110px;
+}
+
+.oi-logo--md {
+    width: 144px;
+}
+
+.oi-logo--lg {
+    width: 170px;
+}
+
+.oi-logo--light img {
+    filter: brightness(0) invert(1);
+}
+
+/* --------------------------------------------------------------------------
+   Header
+   -------------------------------------------------------------------------- */
+
+.oi-site-header {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.oi-site-header__inner {
+    display: flex;
+    align-items: center;
+    gap: clamp(18px, 3.2vw, 45px);
+    min-height: var(--header-height);
+}
+
+.oi-brand {
+    display: block;
+    flex: none;
+}
+
+.oi-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    margin-left: auto;
+}
+
+.oi-menu-toggle {
+    display: none;
+    place-items: center;
+    width: 39px;
+    height: 39px;
+    margin-left: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-full);
+    background: var(--color-surface-raised);
+    color: var(--color-primary);
+}
+
+.oi-menu-toggle:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+/* --------------------------------------------------------------------------
+   Primary navigation
+   -------------------------------------------------------------------------- */
+
+.oi-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+    flex: 1;
+}
+
+.oi-nav__link {
+    position: relative;
+    padding: 32px 0;
+    color: var(--neutral-700);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    transition: color var(--duration-base) var(--ease-out);
+}
+
+.oi-nav__link:hover {
+    color: var(--color-primary);
+}
+
+.oi-nav__link[aria-current="page"] {
+    color: var(--color-primary);
+}
+
+.oi-nav__link[aria-current="page"]::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: 19px;
+    left: 0;
+    height: 3px;
+    border-radius: 3px;
+    background: var(--color-accent);
+}
+
+/* Drawer-only elements — hidden on desktop */
+.oi-nav__header,
+.oi-nav__close,
+.oi-nav__divider,
+.oi-nav__link-arrow,
+.oi-nav__actions {
+    display: none;
+}
+
+/* On desktop, .oi-nav__links unwraps to be an inline flex row */
+.oi-nav__links {
+    display: contents;
+}
+
+/* --------------------------------------------------------------------------
+   Footer
+   -------------------------------------------------------------------------- */
+
+.oi-site-footer {
+    margin-top: auto;
+    background: var(--green-900);
+    color: var(--color-text-inverse);
+}
+
+.oi-footer__main {
+    display: flex;
+    align-items: center;
+    gap: 30px;
+    padding-block: 27px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.oi-footer__brand {
+    width: 145px;
+    flex: none;
+}
+
+.oi-footer__tagline {
+    flex: 1;
+    margin: 0;
+    color: #e9eee8;
+    font-size: var(--text-xs);
+    font-style: italic;
+}
+
+.oi-footer__socials {
+    display: flex;
+    gap: 10px;
+}
+
+.oi-footer__social {
+    display: grid;
+    place-items: center;
+    width: 29px;
+    height: 29px;
+    border-radius: var(--radius-full);
+    background: #ffffff;
+    color: var(--color-primary);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-extrabold);
+    transition: transform var(--duration-base) var(--ease-out);
+}
+
+.oi-footer__social:hover {
+    transform: translateY(-2px);
+}
+
+.oi-footer__bottom {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding-block: 16px;
+    color: #d6e0d9;
+    font-size: var(--text-2xs);
+}
+
+.oi-footer__links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+}
+
+.oi-footer__links a:hover {
+    color: #ffffff;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+/* --------------------------------------------------------------------------
+   Page heading
+   -------------------------------------------------------------------------- */
+
+.oi-page-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-6);
+    margin-bottom: var(--space-10);
+}
+
+.oi-page-heading__title {
+    margin: 7px 0;
+    font-size: var(--text-4xl);
+    font-weight: var(--weight-extrabold);
+    letter-spacing: -0.0375em;
+}
+
+.oi-page-heading__lede {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--text-base);
+}
+
+/* --------------------------------------------------------------------------
+   Responsive — desktop compact
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1024px) {
+    .oi-site-header__inner {
+        gap: 24px;
+    }
+
+    .oi-header-actions .oi-search {
+        width: 165px;
+    }
+
+    .oi-view {
+        padding-block: var(--space-6) var(--space-14);
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Responsive — navigation collapse → slide-in drawer
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+    :root {
+        --header-height: 66px;
+    }
+
+    .oi-site-header__inner {
+        gap: 13px;
+    }
+
+    /* No backdrop — drawer shadow handles the depth cue */
+
+    /* Drawer panel — shadow only on its left edge */
+    .oi-nav {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: var(--z-overlay);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        width: min(320px, 88vw);
+        padding: 0;
+        overflow-y: auto;
+        background: var(--color-surface);
+        box-shadow: -6px 0 24px rgba(13, 28, 20, 0.14), -1px 0 0 var(--color-border);
+        transform: translateX(100%);
+        transition: transform var(--duration-slow) var(--ease-out);
+        visibility: hidden;
+    }
+
+    .oi-nav.is-open {
+        transform: translateX(0);
+        visibility: visible;
+    }
+
+    /* Drawer header row */
+    .oi-nav__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 20px 16px;
+        border-bottom: 1px solid var(--color-border);
+        flex: none;
+    }
+
+    .oi-nav__header-brand {
+        display: block;
+        width: 110px;
+        flex: none;
+    }
+
+    .oi-nav__close {
+        display: inline-grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-full);
+        background: var(--color-surface-raised);
+        color: var(--color-primary);
+        cursor: pointer;
+        flex: none;
+        transition: background-color var(--duration-base) var(--ease-out),
+            border-color var(--duration-base) var(--ease-out);
+    }
+
+    .oi-nav__close:hover {
+        border-color: var(--green-200);
+        background: var(--green-50);
+    }
+
+    .oi-nav__close:focus-visible {
+        outline: none;
+        box-shadow: var(--focus-ring);
+    }
+
+    /* Nav links list */
+    .oi-nav__links {
+        display: flex;
+        flex-direction: column;
+        padding: 10px 12px;
+        flex: 1;
+    }
+
+    .oi-nav__link {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 13px 12px;
+        border-radius: var(--radius-md);
+        color: var(--neutral-700);
+        font-size: var(--text-base);
+        font-weight: var(--weight-semibold);
+        transition: background-color var(--duration-base) var(--ease-out),
+            color var(--duration-base) var(--ease-out);
+        /* Stagger in when drawer opens */
+        opacity: 0;
+        transform: translateX(12px);
+        transition: background-color var(--duration-base) var(--ease-out),
+            color var(--duration-base) var(--ease-out),
+            opacity var(--duration-slow) var(--ease-out),
+            transform var(--duration-slow) var(--ease-out);
+    }
+
+    .oi-nav.is-open .oi-nav__link:nth-child(1) {
+        opacity: 1;
+        transform: none;
+        transition-delay: 60ms;
+    }
+
+    .oi-nav.is-open .oi-nav__link:nth-child(2) {
+        opacity: 1;
+        transform: none;
+        transition-delay: 100ms;
+    }
+
+    .oi-nav.is-open .oi-nav__link:nth-child(3) {
+        opacity: 1;
+        transform: none;
+        transition-delay: 140ms;
+    }
+
+    .oi-nav.is-open .oi-nav__link:nth-child(4) {
+        opacity: 1;
+        transform: none;
+        transition-delay: 180ms;
+    }
+
+    .oi-nav.is-open .oi-nav__link:nth-child(5) {
+        opacity: 1;
+        transform: none;
+        transition-delay: 220ms;
+    }
+
+    .oi-nav__link:hover {
+        background: var(--green-50);
+        color: var(--color-primary);
+    }
+
+    .oi-nav__link[aria-current="page"] {
+        background: var(--green-50);
+        color: var(--color-primary);
+        font-weight: var(--weight-bold);
+    }
+
+    .oi-nav__link[aria-current="page"]::after {
+        display: none;
+    }
+
+    .oi-nav__link-arrow {
+        color: var(--neutral-400);
+        flex: none;
+        transition: transform var(--duration-base) var(--ease-out);
+    }
+
+    .oi-nav__link:hover .oi-nav__link-arrow,
+    .oi-nav__link[aria-current="page"] .oi-nav__link-arrow {
+        color: var(--color-primary);
+        transform: translateX(3px);
+    }
+
+    /* Divider before actions */
+    .oi-nav__divider {
+        height: 1px;
+        margin: 4px 12px 12px;
+        background: var(--color-border);
+        flex: none;
+    }
+
+    /* Actions at bottom of drawer */
+    .oi-nav__actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 0 12px 20px;
+        flex: none;
+    }
+
+    .oi-nav__actions .oi-search {
+        width: 100%;
+        height: 44px;
+        border-radius: var(--radius-md);
+    }
+
+    .oi-nav__actions .oi-btn,
+    .oi-nav__actions>a {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .oi-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: none;
+    }
+
+    /* Hide search + account on mobile — they live inside the drawer */
+    .oi-header-actions .oi-search,
+    .oi-header-actions [data-account-menu],
+    .oi-header-actions .oi-header-account,
+    .oi-header-actions .oi-btn {
+        display: none;
+    }
+
+    .oi-menu-toggle {
+        display: inline-grid;
+        margin-left: 0;
+    }
+
+    /* Lock scroll when drawer open */
+    body.oi-drawer-open {
+        overflow: hidden;
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Responsive — small screens
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 760px) {
+    .oi-logo--md {
+        width: 118px;
+    }
+
+    .oi-view {
+        padding-block: 15px 56px;
+    }
+
+    .oi-footer__main {
+        flex-wrap: wrap;
+        gap: 15px;
+    }
+
+    .oi-footer__brand {
+        width: 110px;
+    }
+
+    .oi-footer__tagline {
+        min-width: 60%;
+        font-size: var(--text-2xs);
+    }
+
+    .oi-footer__socials {
+        margin-left: auto;
+    }
+
+    .oi-footer__bottom {
+        flex-direction: column;
+        gap: 10px;
+        font-size: var(--text-2xs);
+    }
+
+    .oi-page-heading {
+        display: block;
+        margin-bottom: var(--space-5);
+    }
+
+    .oi-page-heading__title {
+        font-size: 2.125rem;
+    }
+
+    .oi-page-heading__lede {
+        font-size: var(--text-xs);
+    }
+}

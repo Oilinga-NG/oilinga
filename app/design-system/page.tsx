@@ -5,11 +5,9 @@ import { Button } from "@/components/ui/Button";
 import { Icon, type IconName } from "@/components/ui/Icon";
 import { SearchField } from "@/components/ui/SearchField";
 import { CategoryGrid } from "@/components/marketplace/CategoryGrid";
-import { ProductGrid } from "@/components/marketplace/ProductCard";
-import { ShopGrid } from "@/components/marketplace/ShopCard";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
-import { StarRating } from "@/components/ui/StarRating";
-import { categories, featuredShops, products } from "@/lib/data";
+import { categories } from "@/lib/data";
+import { DesignMarketplaceExamples } from "@/components/views/DesignMarketplaceExamples";
 
 export const metadata: Metadata = {
     title: "Design system",
@@ -176,7 +174,7 @@ export default function DesignSystemPage() {
                         </div>
                         <div className="oi-ds__type-row">
                             <span className="oi-ds__type-label">H3 / 18</span>
-                            <span className="oi-ds__h3">Premium Red Palm Oil</span>
+                            <span className="oi-ds__h3">Product title</span>
                         </div>
                         <div className="oi-ds__type-row">
                             <span className="oi-ds__type-label">Body / 15</span>
@@ -282,8 +280,7 @@ export default function DesignSystemPage() {
                         </p>
                     </div>
                     <CategoryGrid categories={categories} />
-                    <ProductGrid products={products.slice(0, 3)} compact />
-                    <ShopGrid shops={featuredShops.slice(0, 3)} />
+                    <DesignMarketplaceExamples />
                 </section>
 
                 <section className="oi-ds__section">
@@ -299,12 +296,10 @@ export default function DesignSystemPage() {
                         items={[
                             { label: "Home", href: "/" },
                             { label: "Marketplace", href: "/marketplace" },
-                            { label: "Premium Red Palm Oil" },
+                            { label: "Product title" },
                         ]}
                     />
                     <div className="oi-ds__row">
-                        <StarRating rating={4.9} reviews={128} />
-                        <StarRating rating={4.6} />
                         <span className="oi-chip" aria-current="true">
                             Crude palm oil
                         </span>

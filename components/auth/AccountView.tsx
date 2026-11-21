@@ -7,36 +7,14 @@ import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { useAuth } from "./AuthProvider";
 import { AccountSidebarNav } from "./AccountSidebarNav";
 import type { CustomerOrder } from "@/lib/types";
+import { readBackendData } from "@/lib/backend-client";
+import { LoadingState } from "@/components/ui/LoadingState";
 
 const statusTone: Record<string, BadgeTone> = {
     Processing: "pending",
     Shipped: "shipped",
     Delivered: "delivered",
 };
-
-function readCount(key: string): number {
-    if (typeof window === "undefined") return 0;
-    try {
-        const raw = window.localStorage.getItem(key);
-        if (!raw) return 0;
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.length : 0;
-    } catch {
-        return 0;
-    }
-}
-
-function readOrders(): CustomerOrder[] {
-    if (typeof window === "undefined") return [];
-    try {
-        const raw = window.localStorage.getItem("oilinga_orders");
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as CustomerOrder[]) : [];
-    } catch {
-        return [];
-    }
-}
 
 export function AccountView() {
     const router = useRouter();
@@ -55,27 +33,25 @@ export function AccountView() {
 
     useEffect(() => {
         if (!user) return;
-        setOrdersCount(readCount("oilinga_orders"));
-        setWishlistCount(readCount("oilinga_wishlist"));
-        setReviewsCount(readCount("oilinga_reviews"));
-        const orders = readOrders();
-        setRecentOrders(orders.slice(-3).reverse());
+        let cancelled = false;
+        void Promise.all([
+            readBackendData<{ orders: CustomerOrder[] }>("orders"),
+            readBackendData<{ items: unknown[] }>("wishlist"),
+            readBackendData<{ reviews: unknown[] }>("my-reviews"),
+        ]).then(([orderData, wishlistData, reviewData]) => {
+            if (cancelled) return;
+            setOrdersCount(orderData.orders.length); setRecentOrders(orderData.orders.slice(-3).reverse());
+            setWishlistCount(wishlistData.items.length); setReviewsCount(reviewData.reviews.length);
+        }).catch(error => console.error("Account data could not be loaded", error));
+        return () => { cancelled = true; };
     }, [user]);
 
     if (!ready) {
-        return (
-            <section className="oi-view oi-container" aria-live="polite">
-                <div className="oi-account__loading">Loading your account…</div>
-            </section>
-        );
+        return <LoadingState label="Loading your account" />;
     }
 
     if (!user) {
-        return (
-            <section className="oi-view oi-container" aria-live="polite">
-                <div className="oi-account__loading">Redirecting you to sign in…</div>
-            </section>
-        );
+        return <LoadingState label="Redirecting to sign in" />;
     }
 
     const firstName = user.name.split(/\s+/)[0];
@@ -102,6 +78,15 @@ export function AccountView() {
                             <p className="oi-account-banner__meta">
                                 Member since {joined}
                             </p>
+                            <div className="oi-account-banner__badges">
+                                <Badge tone={user.role === "admin" ? "gold" : user.role === "seller" ? "green" : "neutral"}>
+                                    {user.role === "admin" ? "Administrator" : user.role === "seller" ? "Seller account" : "Customer account"}
+                                </Badge>
+                                {user.emailVerifiedAt
+                                    ? <Badge tone="green">Email verified</Badge>
+                                    : <Badge tone="pending">Email not verified</Badge>}
+                                {user.status !== "ACTIVE" && <Badge tone="red">Account {user.status.toLowerCase()}</Badge>}
+                            </div>
                         </div>
                     </div>
 

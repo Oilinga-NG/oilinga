@@ -6,11 +6,15 @@ import {
     useContext,
     useEffect,
     useMemo,
+    useRef,
     useState,
     type ReactNode,
 } from "react";
 import type { Product } from "./data";
 import type { WishlistItem } from "./types";
+import { apiFetch } from "@/lib/api-client";
+import { mapProduct } from "@/lib/backend-mappers";
+import { useAuth } from "@/components/auth/AuthProvider";
 
 const WISHLIST_KEY = "oilinga_wishlist";
 
@@ -45,17 +49,42 @@ function writeWishlist(items: WishlistItem[]): void {
 }
 
 export function WishlistProvider({ children }: { children: ReactNode }) {
+    const { user, ready: authReady } = useAuth();
     const [items, setItems] = useState<WishlistItem[]>([]);
+    const [hydrated, setHydrated] = useState(false);
+    const loadedFor = useRef<string | null | undefined>(undefined);
 
-    // Hydrate from localStorage on mount.
     useEffect(() => {
-        setItems(readWishlist());
-    }, []);
+        if (!authReady) return;
+        let cancelled = false;
+        const identity = user?.id ?? null;
+        async function hydrate() {
+            try {
+                if (!user) {
+                    if (!cancelled) setItems(readWishlist());
+                } else {
+                    const remote = await apiFetch<{ product: Record<string, unknown> }[]>("/wishlist");
+                    const merged: WishlistItem[] = remote.map(row => ({ product: mapProduct(row.product) }));
+                    for (const oldItem of readWishlist()) if (!merged.some(item => item.product.slug === oldItem.product.slug)) merged.push(oldItem);
+                    if (!cancelled) setItems(merged);
+                }
+            } catch (error) {
+                console.error("Wishlist data could not be loaded", error);
+                if (!cancelled) setItems(readWishlist());
+            } finally { if (!cancelled) { loadedFor.current = identity; setHydrated(true); } }
+        }
+        void hydrate();
+        return () => { cancelled = true; };
+    }, [authReady, user?.id]);
 
-    // Persist on every change.
     useEffect(() => {
-        writeWishlist(items);
-    }, [items]);
+        if (!hydrated || loadedFor.current !== (user?.id ?? null)) return;
+        if (!user) { writeWishlist(items); return; }
+        const timer = window.setTimeout(() => {
+            void apiFetch("/wishlist", { method: "PUT", body: JSON.stringify({ productIds: items.map(item => item.product.id).filter(Boolean) }) }).then(() => localStorage.removeItem(WISHLIST_KEY)).catch(error => console.error("Wishlist data could not be saved", error));
+        }, 180);
+        return () => window.clearTimeout(timer);
+    }, [items, hydrated, user?.id]);
 
     const addToWishlist = useCallback((product: Product) => {
         setItems((prev) => {

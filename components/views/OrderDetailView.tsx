@@ -8,20 +8,9 @@ import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { ButtonLink } from "@/components/ui/ButtonLink";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { Icon } from "@/components/ui/Icon";
-
-const ORDERS_KEY = "oilinga_orders";
-
-function readOrders(): CustomerOrder[] {
-    if (typeof window === "undefined") return [];
-    try {
-        const raw = window.localStorage.getItem(ORDERS_KEY);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as CustomerOrder[]) : [];
-    } catch {
-        return [];
-    }
-}
+import { readBackendData } from "@/lib/backend-client";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { LoadingState } from "@/components/ui/LoadingState";
 
 function formatPrice(value: number): string {
     return "₦" + value.toLocaleString("en-NG");
@@ -62,15 +51,20 @@ interface Props {
 }
 
 export function OrderDetailView({ orderId }: Props) {
+    const { user, ready } = useAuth();
     const [order, setOrder] = useState<CustomerOrder | null | undefined>(undefined);
 
     useEffect(() => {
-        const orders = readOrders();
-        const found = orders.find((o) => o.id === orderId);
-        setOrder(found ?? null);
-    }, [orderId]);
+        if (!ready) return;
+        if (!user) { setOrder(null); return; }
+        let cancelled = false;
+        void readBackendData<{ order: CustomerOrder | null }>("order", { id: orderId }).then(data => { if (!cancelled) setOrder(data.order); }).catch(error => { console.error("Order could not be loaded", error); if (!cancelled) setOrder(null); });
+        return () => { cancelled = true; };
+    }, [orderId, ready, user?.email]);
 
-    if (order === undefined) return null;
+    if (!ready || order === undefined) return <LoadingState label="Loading order details" />;
+
+    if (!user) return <main className="oi-page"><div className="oi-cart-empty"><h1 className="oi-page-title">Sign in to view this order</h1><p className="oi-muted">Order details are only available to the account that placed the order.</p><ButtonLink href={`/auth/login?next=${encodeURIComponent(`/orders/${orderId}`)}`} variant="primary">Sign in</ButtonLink></div></main>;
 
     if (order === null) {
         return (
