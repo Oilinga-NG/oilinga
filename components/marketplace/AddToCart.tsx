@@ -17,15 +17,17 @@ export function AddToCart({ product }: AddToCartProps) {
     const { isInWishlist, toggleWishlist } = useWishlist();
 
     const wished = isInWishlist(product.slug);
+    const inStock = Number(product.stock) > 0;
 
-    function handleAddToCart() {
-        addItem(product);
-        notify(`${product.name} added to your cart`);
+    async function handleAddToCart() {
+        const added = await addItem(product);
+        notify(added ? `${product.name} added to your cart` : `Could not add ${product.name} to your cart`);
     }
 
-    function handleToggleWishlist() {
-        toggleWishlist(product);
-        notify(wished ? "Removed from wishlist" : "Added to wishlist");
+    async function handleToggleWishlist() {
+        const wasWished = wished;
+        const saved = await toggleWishlist(product);
+        notify(saved ? (wasWished ? "Removed from wishlist" : "Added to wishlist") : "Wishlist could not be updated");
     }
 
     return (
@@ -33,15 +35,16 @@ export function AddToCart({ product }: AddToCartProps) {
             <button
                 type="button"
                 className="oi-btn oi-btn--gold oi-btn--lg"
-                onClick={handleAddToCart}
+                onClick={() => void handleAddToCart()}
+                disabled={!inStock}
             >
-                Add to cart
+                {inStock ? "Add to cart" : "Out of stock"}
                 <Icon name="bag" size={17} />
             </button>
             <button
                 type="button"
                 className={cn("oi-btn oi-btn--outline oi-btn--lg", wished && "is-active")}
-                onClick={handleToggleWishlist}
+                onClick={() => void handleToggleWishlist()}
                 aria-pressed={wished}
             >
                 <Icon name="heart" size={17} />

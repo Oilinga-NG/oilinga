@@ -4,6 +4,7 @@ import { useCart } from "@/lib/cart-context";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { ButtonLink } from "@/components/ui/ButtonLink";
 import { Icon } from "@/components/ui/Icon";
+import { useToast } from "@/components/ui/Toast";
 import { cn } from "@/lib/cn";
 
 function formatPrice(value: number): string {
@@ -11,7 +12,24 @@ function formatPrice(value: number): string {
 }
 
 export function CartView() {
-    const { items, totalCount, removeItem, updateQty, clearCart } = useCart();
+    const { items, totalCount, subtotal, removeItem, updateQty, clearCart } = useCart();
+    const notify = useToast();
+
+    async function handleQuantity(product: (typeof items)[number]["product"], quantity: number) {
+        const ok = await updateQty(product.slug, quantity);
+        if (!ok) notify(`${product.name} quantity could not be updated`);
+        if (quantity <= 0 && ok) notify(`${product.name} removed from your cart`);
+    }
+
+    async function handleRemove(name: string, slug: string) {
+        const ok = await removeItem(slug);
+        notify(ok ? `${name} removed from your cart` : `${name} could not be removed`);
+    }
+
+    async function handleClear() {
+        const ok = await clearCart();
+        notify(ok ? "Cart cleared" : "Cart could not be cleared");
+    }
 
     if (items.length === 0) {
         return (
@@ -34,10 +52,7 @@ export function CartView() {
         );
     }
 
-    const subtotal = items.reduce(
-        (sum, item) => sum + item.product.priceValue * item.quantity,
-        0,
-    );
+    const hasUnavailable = items.some(item => Number(item.product.stock) <= 0 || item.quantity > Number(item.product.stock));
 
     return (
         <main className="oi-page">
@@ -52,7 +67,7 @@ export function CartView() {
             <div className="oi-cart-layout">
                 {/* Items column */}
                 <div>
-                    {items.map(({ product, quantity }) => (
+                    {items.map(({ product, quantity, lineTotal }) => (
                         <div key={product.slug} className="oi-cart-item">
                             <span
                                 className={cn(
@@ -75,7 +90,7 @@ export function CartView() {
                                     type="button"
                                     className="oi-stepper__btn"
                                     aria-label="Decrease quantity"
-                                    onClick={() => updateQty(product.slug, quantity - 1)}
+                                    onClick={() => void handleQuantity(product, quantity - 1)}
                                 >
                                     <Icon name="close" size={12} />
                                 </button>
@@ -86,19 +101,21 @@ export function CartView() {
                                     type="button"
                                     className="oi-stepper__btn"
                                     aria-label="Increase quantity"
-                                    onClick={() => updateQty(product.slug, quantity + 1)}
+                                    disabled={quantity >= Number(product.stock)}
+                                    title={quantity >= Number(product.stock) ? "Stock limit reached" : undefined}
+                                    onClick={() => void handleQuantity(product, quantity + 1)}
                                 >
                                     <Icon name="plus" size={12} />
                                 </button>
                             </div>
                             <p className="oi-cart-item__price">
-                                {formatPrice(product.priceValue * quantity)}
+                                {formatPrice(lineTotal ?? product.priceValue * quantity)}
                             </p>
                             <button
                                 type="button"
                                 className="oi-btn-icon"
                                 aria-label={`Remove ${product.name} from cart`}
-                                onClick={() => removeItem(product.slug)}
+                                onClick={() => void handleRemove(product.name, product.slug)}
                             >
                                 <Icon name="close" size={16} />
                             </button>
@@ -109,7 +126,7 @@ export function CartView() {
                         <button
                             type="button"
                             className="oi-btn oi-btn--outline oi-btn--sm"
-                            onClick={clearCart}
+                            onClick={() => void handleClear()}
                         >
                             Clear cart
                         </button>
@@ -131,14 +148,30 @@ export function CartView() {
                         <span>Total</span>
                         <span>{formatPrice(subtotal)}</span>
                     </div>
-                    <ButtonLink
-                        href="/checkout"
-                        variant="gold"
-                        block
-                        style={{ marginTop: "var(--space-4)" }}
-                    >
-                        Proceed to checkout
-                    </ButtonLink>
+                    {hasUnavailable && (
+                        <p className="oi-form-error" role="alert" style={{ marginTop: "var(--space-3)" }}>
+                            Some items are no longer available in the requested quantity. Update your cart before checkout.
+                        </p>
+                    )}
+                    {hasUnavailable ? (
+                        <button
+                            type="button"
+                            className="oi-btn oi-btn--gold oi-btn--block"
+                            style={{ marginTop: "var(--space-4)" }}
+                            disabled
+                        >
+                            Resolve stock issues to continue
+                        </button>
+                    ) : (
+                        <ButtonLink
+                            href="/checkout"
+                            variant="gold"
+                            block
+                            style={{ marginTop: "var(--space-4)" }}
+                        >
+                            Proceed to checkout
+                        </ButtonLink>
+                    )}
                 </aside>
             </div>
         </main>

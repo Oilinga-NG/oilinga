@@ -65,7 +65,7 @@ const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; icon: Parameters<t
 
 export function CheckoutView() {
     const router = useRouter();
-    const { items, clearCart } = useCart();
+    const { items, subtotal, clearCart } = useCart();
     const { user, ready: authReady } = useAuth();
 
     const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -80,10 +80,7 @@ export function CheckoutView() {
     const [errors, setErrors] = useState<Partial<Record<keyof DeliveryInfo, string>>>({});
     const [orderError, setOrderError] = useState("");
 
-    const subtotal = items.reduce(
-        (sum, item) => sum + item.product.priceValue * item.quantity,
-        0,
-    );
+    const hasUnavailable = items.some(item => Number(item.product.stock) <= 0 || item.quantity > Number(item.product.stock));
 
     if (!authReady) return <LoadingState label="Loading your account" />;
     if (!user) return <main className="oi-page"><div className="oi-cart-empty"><h1 className="oi-page-title">Sign in to check out</h1><p className="oi-muted">Orders are securely saved to your Oilinga account.</p><div className="oi-checkout-auth-actions"><a className="oi-btn oi-btn--primary" href="/auth/login?next=%2Fcheckout">Sign in</a><a className="oi-btn oi-btn--outline" href="/auth/signup?next=%2Fcheckout">Create account</a></div></div></main>;
@@ -99,10 +96,18 @@ export function CheckoutView() {
     }
 
     function handleDeliveryContinue() {
+        if (hasUnavailable) {
+            setOrderError("Some items are no longer available. Return to your cart to update them.");
+            return;
+        }
         if (validateDelivery()) setStep(2);
     }
 
     async function handlePlaceOrder() {
+        if (hasUnavailable) {
+            setOrderError("Some items are no longer available. Return to your cart to update them.");
+            return;
+        }
         let id = "";
         try {
             const payment = paymentMethod === "pay-on-delivery" ? "cash-on-delivery" : paymentMethod === "card" ? "paystack" : "bank-transfer";
@@ -112,7 +117,7 @@ export function CheckoutView() {
             setOrderError(error instanceof Error ? error.message : "We could not save your order. Please try again.");
             return;
         }
-        clearCart();
+        void clearCart();
         router.push("/orders/" + id);
     }
 
@@ -248,14 +253,14 @@ export function CheckoutView() {
                     {/* Cart summary */}
                     <aside className="oi-cart-summary">
                         <h2 className="oi-card-head">Order summary</h2>
-                        {items.map(({ product, quantity }) => (
+                        {items.map(({ product, quantity, lineTotal }) => (
                             <div key={product.slug} className="oi-checkout-review" style={{ gap: "var(--space-1)", marginBottom: "var(--space-2)" }}>
                                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                                     <span style={{ fontSize: "var(--text-sm)" }}>
                                         {product.name} × {quantity}
                                     </span>
                                     <span style={{ fontSize: "var(--text-sm)", fontWeight: "bold" }}>
-                                        {formatPrice(product.priceValue * quantity)}
+                                        {formatPrice(lineTotal ?? product.priceValue * quantity)}
                                     </span>
                                 </div>
                             </div>
@@ -351,13 +356,13 @@ export function CheckoutView() {
 
                         <div className="oi-checkout-review oi-form-section">
                             <h3 className="oi-form-label">Items</h3>
-                            {items.map(({ product, quantity }) => (
+                            {items.map(({ product, quantity, lineTotal }) => (
                                 <div
                                     key={product.slug}
                                     style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-sm)", marginBottom: "var(--space-1)" }}
                                 >
                                     <span>{product.name} × {quantity}</span>
-                                    <span>{formatPrice(product.priceValue * quantity)}</span>
+                                    <span>{formatPrice(lineTotal ?? product.priceValue * quantity)}</span>
                                 </div>
                             ))}
                             <div
@@ -368,6 +373,11 @@ export function CheckoutView() {
                             </div>
                         </div>
 
+                        {(orderError || hasUnavailable) && (
+                            <p className="oi-form-error" role="alert">
+                                {orderError || "Some items are no longer available. Return to your cart to update them."}
+                            </p>
+                        )}
                         <div style={{ display: "flex", gap: "var(--space-3)", marginTop: "var(--space-6)" }}>
                             <button
                                 type="button"
@@ -380,8 +390,8 @@ export function CheckoutView() {
                             <button
                                 type="button"
                                 className="oi-btn oi-btn--gold"
-                                onClick={handlePlaceOrder}
-                                disabled={items.length === 0}
+                                onClick={() => void handlePlaceOrder()}
+                                disabled={items.length === 0 || hasUnavailable}
                             >
                                 Place order
                                 <Icon name="bag" size={16} />

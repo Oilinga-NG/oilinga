@@ -20,7 +20,19 @@ export function ProductCard({ product }: ProductCardProps) {
     const { isInWishlist, toggleWishlist } = useWishlist();
 
     const wished = isInWishlist(product.slug);
+    const inStock = Number(product.stock) > 0;
     const productHref = `/products/${product.slug}`;
+
+    async function handleAddToCart() {
+        const added = await addItem(product);
+        notify(added ? `${product.name} added to your cart` : `Could not add ${product.name} to your cart`);
+    }
+
+    async function handleWishlist() {
+        const wasWished = wished;
+        const saved = await toggleWishlist(product);
+        notify(saved ? (wasWished ? "Removed from wishlist" : "Added to wishlist") : "Wishlist could not be updated");
+    }
 
     return (
         <article className="oi-product-card">
@@ -50,8 +62,7 @@ export function ProductCard({ product }: ProductCardProps) {
                     }
                     onClick={(e) => {
                         e.preventDefault();
-                        toggleWishlist(product);
-                        notify(wished ? "Removed from wishlist" : "Added to wishlist");
+                        void handleWishlist();
                     }}
                 >
                     <Icon name="heart" size={14} />
@@ -80,11 +91,10 @@ export function ProductCard({ product }: ProductCardProps) {
                     <button
                         type="button"
                         className="oi-add-btn"
-                        onClick={() => {
-                            addItem(product);
-                            notify(`${product.name} added to your cart`);
-                        }}
-                        aria-label={`Add ${product.name} to cart`}
+                        onClick={() => void handleAddToCart()}
+                        disabled={!inStock}
+                        title={inStock ? undefined : "Out of stock"}
+                        aria-label={inStock ? `Add ${product.name} to cart` : `${product.name} is out of stock`}
                     >
                         <Icon name="plus" size={18} />
                     </button>
