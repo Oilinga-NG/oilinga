@@ -49,7 +49,81 @@ export interface DeliveryInfo {
 export type OrderStatusKey = "PENDING" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED" | "REFUNDED";
 
 /** Raw backend payment states. */
-export type OrderPaymentStatus = "PENDING" | "SUCCESS" | "FAILED" | "REFUNDED";
+export type OrderPaymentStatus = "PENDING" | "SUCCESS" | "FAILED" | "REFUNDED" | "PARTIALLY_REFUNDED";
+
+/** Provider-agnostic record of a transaction stored by the backend. */
+export type PaymentRecordStatus = "PENDING" | "SUCCESS" | "FAILED" | "REFUNDED" | "PARTIALLY_REFUNDED";
+export type RefundRecordStatus = "PENDING" | "SUCCESS" | "FAILED";
+
+/** A traceable refund attempt against a payment. */
+export interface PaymentRefundRecord {
+    id: string;
+    reference: string;
+    /** Admin refund listings include the related payment/order identifiers. */
+    paymentReference?: string;
+    orderNumber?: string;
+    providerReference?: string | null;
+    amount: number;
+    currency: string;
+    status: RefundRecordStatus;
+    reason?: string | null;
+    error?: string | null;
+    createdAt: string;
+}
+
+/** A payment transaction record (Paystack or local/manual). */
+export interface PaymentRecord {
+    id: string;
+    orderId: string;
+    orderNumber?: string;
+    customer?: string;
+    provider: "PAYSTACK" | "BANK_TRANSFER" | "CASH_ON_DELIVERY" | "OTHER";
+    status: PaymentRecordStatus;
+    amount: number;
+    currency: string;
+    reference: string;
+    gatewayStatus?: string | null;
+    failureReason?: string | null;
+    authorizationUrl?: string | null;
+    paidAt?: string | null;
+    verifiedAt?: string | null;
+    lastCheckedAt?: string | null;
+    createdAt: string;
+    refunds: PaymentRefundRecord[];
+}
+
+/** Result of a Paystack initialization request. */
+export interface PaymentInitialization {
+    payment: PaymentRecord;
+    authorizationUrl: string;
+    reference: string;
+    amount: number;
+    currency: string;
+    replayed: boolean;
+}
+
+/** One discrepancy found while reconciling local payments with Paystack. */
+export interface ReconciliationMismatch {
+    reference: string;
+    orderNumber: string;
+    localStatus: string;
+    gatewayStatus: string;
+    localAmountKobo: number;
+    gatewayAmountKobo: number;
+    issue: string;
+}
+
+/** Result of comparing payment records against the payment provider. */
+export interface ReconciliationReport {
+    checked: number;
+    matched: number;
+    mismatches: ReconciliationMismatch[];
+    totals: {
+        localSuccessfulKobo: number;
+        gatewaySuccessfulKobo: number;
+        successfulCount: number;
+    };
+}
 
 /** An append-only entry in an order's audit trail. */
 export interface OrderEvent {

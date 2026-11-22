@@ -1,5 +1,14 @@
 import { defaultCategories, formatNaira, getCategoryArt, type Category, type Product, type ProductMedia, type Shop } from "@/lib/data";
-import type { CustomerOrder, OrderEvent, OrderPaymentStatus, OrderStatusKey, PaymentMethod } from "@/lib/types";
+import type {
+    CustomerOrder,
+    OrderEvent,
+    OrderPaymentStatus,
+    OrderStatusKey,
+    PaymentMethod,
+    PaymentRecord,
+    PaymentRefundRecord,
+    RefundRecordStatus
+} from "@/lib/types";
 
 type Row = Record<string, any>;
 export function mapProduct(row: Row): Product {
@@ -68,7 +77,48 @@ function mapPaymentMethod(value: unknown): PaymentMethod {
 function mapPaymentStatus(row: Row): OrderPaymentStatus {
     const candidates = [row.paymentStatus, row.payments?.[row.payments.length - 1]?.status].filter(Boolean);
     const status = String(candidates[0] ?? "PENDING").toUpperCase();
-    return (["PENDING", "SUCCESS", "FAILED", "REFUNDED"].includes(status) ? status : "PENDING") as OrderPaymentStatus;
+    return (["PENDING", "SUCCESS", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED"].includes(status) ? status : "PENDING") as OrderPaymentStatus;
+}
+
+export function mapRefundRecord(row: Row): PaymentRefundRecord {
+    const status = String(row.status ?? "PENDING").toUpperCase();
+    return {
+        id: String(row.id ?? ""),
+        reference: String(row.reference ?? ""),
+        paymentReference: row.paymentReference ? String(row.paymentReference) : undefined,
+        orderNumber: row.orderNumber ? String(row.orderNumber) : undefined,
+        providerReference: row.providerReference ?? null,
+        amount: Number(row.amount ?? 0),
+        currency: String(row.currency ?? "NGN"),
+        status: (["PENDING", "SUCCESS", "FAILED"].includes(status) ? status : "PENDING") as RefundRecordStatus,
+        reason: row.reason ?? null,
+        error: row.error ?? null,
+        createdAt: toIso(row.createdAt) ?? new Date().toISOString()
+    };
+}
+
+/** Normalize a backend payment row for customer and admin payment panels. */
+export function mapPaymentRecord(row: Row): PaymentRecord {
+    const status = String(row.status ?? "PENDING").toUpperCase();
+    return {
+        id: String(row.id ?? ""),
+        orderId: String(row.orderId ?? ""),
+        orderNumber: row.orderNumber ? String(row.orderNumber) : undefined,
+        customer: row.customer ? String(row.customer) : undefined,
+        provider: (String(row.provider ?? "OTHER").toUpperCase() as PaymentRecord["provider"]),
+        status: (["PENDING", "SUCCESS", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED"].includes(status) ? status : "PENDING") as PaymentRecord["status"],
+        amount: Number(row.amount ?? 0),
+        currency: String(row.currency ?? "NGN"),
+        reference: String(row.reference ?? ""),
+        gatewayStatus: row.gatewayStatus ?? null,
+        failureReason: row.failureReason ?? null,
+        authorizationUrl: row.authorizationUrl ?? null,
+        paidAt: toIso(row.paidAt),
+        verifiedAt: toIso(row.verifiedAt),
+        lastCheckedAt: toIso(row.lastCheckedAt),
+        createdAt: toIso(row.createdAt) ?? new Date().toISOString(),
+        refunds: Array.isArray(row.refunds) ? row.refunds.map((refund: Row) => mapRefundRecord(refund)) : []
+    };
 }
 
 export function mapOrder(row: Row): CustomerOrder {

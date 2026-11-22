@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { CustomerOrder, OrderStatusKey } from "@/lib/types";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { CustomerOrder, OrderStatusKey, PaymentInitialization, PaymentRecord } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { ButtonLink } from "@/components/ui/ButtonLink";
@@ -52,6 +53,15 @@ const paymentTone: Record<string, BadgeTone> = {
     PENDING: "gold",
     FAILED: "red",
     REFUNDED: "neutral",
+    PARTIALLY_REFUNDED: "pending",
+};
+
+const paymentStatusLabels: Record<string, string> = {
+    SUCCESS: "Payment confirmed",
+    PENDING: "Awaiting payment",
+    FAILED: "Payment failed",
+    REFUNDED: "Refunded",
+    PARTIALLY_REFUNDED: "Partially refunded",
 };
 
 type TimelineStep = { label: string; done: boolean; active: boolean; date?: string | null };
@@ -79,9 +89,25 @@ interface Props {
 
 export function OrderDetailView({ orderId }: Props) {
     const { user, ready } = useAuth();
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    const callbackReference = searchParams.get("reference");
+    const paymentIntent = searchParams.get("payment");
     const [order, setOrder] = useState<CustomerOrder | null | undefined>(undefined);
+    const [payments, setPayments] = useState<PaymentRecord[]>([]);
     const [busy, setBusy] = useState(false);
+    const [paymentBusy, setPaymentBusy] = useState(false);
     const [actionError, setActionError] = useState("");
+    const [paymentCheck, setPaymentCheck] = useState<{ state: "idle" | "verifying" | "success" | "error"; message: string }>({ state: "idle", message: "" });
+
+    async function reloadOrderAndPayments() {
+        const [orderData, paymentData] = await Promise.all([
+            readBackendData<{ order: CustomerOrder | null }>("order", { id: orderId }),
+            readBackendData<{ payments: PaymentRecord[] }>("payments", { orderId })
+        ]);
+        setOrder(orderData.order);
+        setPayments(paymentData.payments);
+    }
 
     useEffect(() => {
         if (!ready) return;
@@ -92,6 +118,78 @@ export function OrderDetailView({ orderId }: Props) {
             .catch(error => { console.error("Order could not be loaded", error); if (!cancelled) setOrder(null); });
         return () => { cancelled = true; };
     }, [orderId, ready, user?.email]);
+
+    useEffect(() => {
+        if (!ready || !user || !order?.dbId) return;
+        let cancelled = false;
+        void readBackendData<{ payments: PaymentRecord[] }>("payments", { orderId: order.dbId })
+            .then(data => { if (!cancelled) setPayments(data.payments); })
+            .catch(() => { if (!cancelled) setPayments([]); });
+        return () => { cancelled = true; };
+    }, [order?.dbId, ready, user?.email]);
+
+    // Paystack's callback returns the browser here. Settlement is always decided
+    // by a server-side verification call, never by the query string itself.
+    useEffect(() => {
+        if (!ready || !user || !callbackReference) return;
+        let cancelled = false;
+        setPaymentCheck({ state: "verifying", message: "Confirming your payment with Paystack…" });
+        void mutateBackendData<PaymentRecord>("verify-payment", { reference: callbackReference })
+            .then(async () => {
+                await reloadOrderAndPayments();
+                if (cancelled) return;
+                setPaymentCheck({ state: "success", message: "Payment confirmed. Your order is now being prepared." });
+                router.replace(`/orders/${orderId}?payment=confirmed`);
+            })
+            .catch(error => {
+                if (!cancelled) setPaymentCheck({
+                    state: "error",
+                    message: error instanceof Error ? error.message : "We could not confirm this payment yet."
+                });
+            });
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ready, user?.email, callbackReference, orderId]);
+
+    async function handleStartPayment() {
+        if (paymentBusy) return;
+        const pending = payments.find(payment => payment.provider === "PAYSTACK" && payment.status === "PENDING");
+        if (pending?.authorizationUrl) {
+            window.location.assign(pending.authorizationUrl);
+            return;
+        }
+        setPaymentBusy(true);
+        setActionError("");
+        try {
+            const initialized = await mutateBackendData<PaymentInitialization>("initialize-payment", {
+                orderId: order?.dbId ?? orderId,
+                idempotencyKey: `pay-retry-${order?.dbId ?? orderId}`,
+                callbackUrl: `${window.location.origin}/orders/${orderId}?payment=verify`
+            });
+            if (!initialized.authorizationUrl) throw new Error("The payment provider did not return a checkout link.");
+            window.location.assign(initialized.authorizationUrl);
+        } catch (error) {
+            setActionError(error instanceof Error ? error.message : "We could not start the payment. Please try again.");
+        } finally {
+            setPaymentBusy(false);
+        }
+    }
+
+    async function handleCheckStatus() {
+        const reference = payments.find(payment => payment.provider === "PAYSTACK")?.reference;
+        if (!reference || paymentBusy) return;
+        setPaymentBusy(true);
+        setPaymentCheck({ state: "verifying", message: "Checking the latest payment status…" });
+        try {
+            await mutateBackendData<PaymentRecord>("verify-payment", { reference });
+            await reloadOrderAndPayments();
+            setPaymentCheck({ state: "success", message: "Payment status is up to date." });
+        } catch (error) {
+            setPaymentCheck({ state: "error", message: error instanceof Error ? error.message : "This payment is not confirmed yet." });
+        } finally {
+            setPaymentBusy(false);
+        }
+    }
 
     async function handleCancel() {
         if (!order || busy) return;
@@ -130,6 +228,7 @@ export function OrderDetailView({ orderId }: Props) {
     const tone: BadgeTone = statusTone[order.status] ?? "neutral";
     const firstItemSlug = order.items[0]?.product.slug ?? "";
     const canCancel = ["PENDING", "PROCESSING"].includes(order.statusKey);
+    const primaryPayment = payments[0] ?? null;
 
     return (
         <main className="oi-page oi-order-detail">
@@ -144,10 +243,41 @@ export function OrderDetailView({ orderId }: Props) {
                 <div className="oi-order-detail__header-actions">
                     <Badge tone={tone}>{order.status}</Badge>
                     <Badge tone={paymentTone[order.paymentStatus] ?? "neutral"}>
-                        {order.paymentStatus === "SUCCESS" ? "Payment confirmed" : order.paymentStatus === "REFUNDED" ? "Refunded" : order.paymentStatus === "FAILED" ? "Payment failed" : "Awaiting payment"}
+                        {paymentStatusLabels[order.paymentStatus] ?? "Awaiting payment"}
                     </Badge>
                 </div>
             </div>
+
+            {paymentIntent === "retry" && paymentCheck.state === "idle" && (
+                <div className="oi-payment-banner oi-payment-banner--pending" role="status">
+                    <Icon name="shield" size={18} />
+                    <div><strong>Order saved — payment pending</strong><span>Complete your payment below to start fulfilment.</span></div>
+                </div>
+            )}
+            {paymentIntent === "confirmed" && paymentCheck.state === "idle" && (
+                <div className="oi-payment-banner oi-payment-banner--success" role="status">
+                    <Icon name="check" size={18} />
+                    <div><strong>Payment confirmed</strong><span>We received your payment and your order is being prepared.</span></div>
+                </div>
+            )}
+            {paymentCheck.state === "verifying" && (
+                <div className="oi-payment-banner oi-payment-banner--pending" role="status">
+                    <Icon name="shield" size={18} />
+                    <div><strong>Secure verification in progress</strong><span>{paymentCheck.message}</span></div>
+                </div>
+            )}
+            {paymentCheck.state === "success" && (
+                <div className="oi-payment-banner oi-payment-banner--success" role="status">
+                    <Icon name="check" size={18} />
+                    <div><strong>Payment verified</strong><span>{paymentCheck.message}</span></div>
+                </div>
+            )}
+            {paymentCheck.state === "error" && (
+                <div className="oi-payment-banner oi-payment-banner--error" role="alert">
+                    <Icon name="close" size={18} />
+                    <div><strong>Payment not confirmed</strong><span>{paymentCheck.message}</span></div>
+                </div>
+            )}
 
             {order.statusKey === "REFUNDED" && (
                 <div className="oi-order-detail__notice">
@@ -235,12 +365,85 @@ export function OrderDetailView({ orderId }: Props) {
                     </div>
                     <div>
                         <h2 className="oi-card-head">Payment</h2>
-                        <div className="oi-dash-card">
-                            <p style={{ fontWeight: "bold" }}>{paymentLabels[order.payment] ?? "Payment"}</p>
-                            <p className="oi-muted" style={{ fontSize: "var(--text-sm)" }}>Status: {order.paymentStatus.toLowerCase()}</p>
-                            <p className="oi-muted" style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-2)" }}>
-                                Snapshots of product names and prices are stored with this order, so its value never changes when a listing changes.
-                            </p>
+                        <div className="oi-payment-panel">
+                            <div className="oi-payment-panel__head">
+                                <span className="oi-payment-panel__icon"><Icon name={order.payment === "card" ? "lock" : order.payment === "pay-on-delivery" ? "package" : "wallet"} size={20} /></span>
+                                <div className="oi-payment-panel__identity">
+                                    <strong>{paymentLabels[order.payment] ?? "Payment"}</strong>
+                                    <small>{primaryPayment?.reference ? `Ref ${primaryPayment.reference}` : "No transaction yet"}</small>
+                                </div>
+                                <Badge tone={paymentTone[order.paymentStatus] ?? "neutral"}>
+                                    {paymentStatusLabels[order.paymentStatus] ?? "Awaiting payment"}
+                                </Badge>
+                            </div>
+
+                            <div className="oi-payment-panel__amount">
+                                <span>Amount due</span>
+                                <strong>{formatPrice(order.total)}</strong>
+                            </div>
+
+                            {primaryPayment?.failureReason && order.paymentStatus === "FAILED" && (
+                                <p className="oi-payment-panel__error"><Icon name="close" size={14} /> {primaryPayment.failureReason}</p>
+                            )}
+                            {order.paymentStatus === "SUCCESS" && (
+                                <p className="oi-payment-panel__success">
+                                    <Icon name="check" size={14} />
+                                    Confirmed {primaryPayment?.verifiedAt ? formatDate(primaryPayment.verifiedAt) : formatDate(order.date)}. A receipt has been recorded against this order.
+                                </p>
+                            )}
+                            {order.paymentStatus === "PARTIALLY_REFUNDED" && (
+                                <p className="oi-payment-panel__muted">A partial refund has been recorded against this transaction.</p>
+                            )}
+                            {order.paymentStatus === "REFUNDED" && (
+                                <p className="oi-payment-panel__success"><Icon name="check" size={14} /> This payment was refunded to the original method.</p>
+                            )}
+                            {order.paymentStatus === "PENDING" && primaryPayment?.provider === "PAYSTACK" && (
+                                <p className="oi-payment-panel__muted">Your order is reserved. Complete the secure Paystack checkout to begin fulfilment.</p>
+                            )}
+
+                            {primaryPayment && (
+                                <dl className="oi-payment-panel__meta">
+                                    <div><dt>Provider status</dt><dd>{primaryPayment.gatewayStatus ?? "—"}</dd></div>
+                                    <div><dt>Last checked</dt><dd>{primaryPayment.lastCheckedAt ? formatDate(primaryPayment.lastCheckedAt) : "—"}</dd></div>
+                                </dl>
+                            )}
+
+                            {primaryPayment?.refunds.length ? (
+                                <div className="oi-payment-panel__refunds">
+                                    <h3>Refund records</h3>
+                                    {primaryPayment.refunds.map(refund => (
+                                        <div className="oi-refund-row" key={refund.id}>
+                                            <Icon name={refund.status === "SUCCESS" ? "check" : refund.status === "FAILED" ? "close" : "shield"} size={14} />
+                                            <div>
+                                                <strong>{formatPrice(refund.amount)} · {refund.status.toLowerCase()}</strong>
+                                                <small>{refund.reference}{refund.reason ? ` · ${refund.reason}` : ""}</small>
+                                                {refund.error && <small>{refund.error}</small>}
+                                            </div>
+                                            <time>{formatDate(refund.createdAt)}</time>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : null}
+
+                            {order.paymentStatus === "PENDING" && order.payment === "card" && (
+                                <div className="oi-payment-panel__actions">
+                                    <button type="button" className="oi-btn oi-btn--primary oi-btn--sm" onClick={() => void handleStartPayment()} disabled={paymentBusy}>
+                                        <Icon name="lock" size={14} /> {primaryPayment?.authorizationUrl ? "Continue payment" : "Pay now"}
+                                    </button>
+                                    {primaryPayment?.provider === "PAYSTACK" && (
+                                        <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" onClick={() => void handleCheckStatus()} disabled={paymentBusy}>
+                                            Check status
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                            {order.paymentStatus === "FAILED" && order.payment === "card" && (
+                                <div className="oi-payment-panel__actions">
+                                    <button type="button" className="oi-btn oi-btn--primary oi-btn--sm" onClick={() => void handleStartPayment()} disabled={paymentBusy}>
+                                        <Icon name="shield" size={14} /> Retry payment
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>

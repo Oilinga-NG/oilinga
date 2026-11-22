@@ -1,5 +1,5 @@
 import { apiFetch } from "@/lib/api-client";
-import { mapCategory, mapOrder, mapProduct, mapReview, mapShop } from "@/lib/backend-mappers";
+import { mapCategory, mapOrder, mapPaymentRecord, mapProduct, mapRefundRecord, mapReview, mapShop } from "@/lib/backend-mappers";
 import { defaultCategories } from "@/lib/data";
 
 /** Compatibility adapter for the views' established data shapes; all persistence is served by oilinga_BE. */
@@ -73,6 +73,9 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         result = { shop: shops[0] ? legacyShop(shops[0], rows) : null, orders: orders.map(row => ({ ...row, status: normalizeStatus(String(row.status)) })) };
     } else if (view === "orders") {
         result = { orders: (await apiFetch<Record<string, unknown>[]>("/orders")).map(mapOrder) };
+    } else if (view === "payments") {
+        const query = params.orderId ? `?orderId=${encodeURIComponent(params.orderId)}` : "";
+        result = { payments: (await apiFetch<Record<string, unknown>[]>(`/payments${query}`)).map(mapPaymentRecord) };
     } else if (view === "order") {
         try { result = { order: mapOrder(await apiFetch<Record<string, unknown>>(`/orders/${encodeURIComponent(params.id ?? "")}`)) }; }
         catch (error) { if (error instanceof Error && "status" in error && error.status === 404) result = { order: null }; else throw error; }
@@ -93,7 +96,9 @@ export async function readBackendData<T>(view: string, params: Record<string, st
             ...data,
             shops: data.shops.map((shop: Record<string, any>) => ({ ...legacyShop(shop), shopStatus: shop.status === "Suspended" || shop.status === "Paused" ? "Paused" : "Active" })),
             categories: (data.categories ?? []).map(mapCategory),
-            orders: data.orders.map(mapOrder)
+            orders: data.orders.map(mapOrder),
+            paymentRecords: (data.paymentRecords ?? []).map(mapPaymentRecord),
+            refundRecords: (data.refundRecords ?? []).map(mapRefundRecord)
         };
     } else {
         throw new Error(`Unsupported backend data view: ${view}`);
@@ -194,6 +199,32 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
         });
     }
     if (action === "delete-category") return await apiFetch<T>(`/admin/categories/${encodeURIComponent(String(payload.id))}`, { method: "DELETE" });
+    if (action === "initialize-payment") {
+        const { orderId, callbackUrl, idempotencyKey } = payload as { orderId: string; callbackUrl?: string; idempotencyKey?: string };
+        return await apiFetch<T>("/payments/paystack/initialize", {
+            method: "POST",
+            headers: idempotencyKey ? { "idempotency-key": idempotencyKey } : {},
+            body: JSON.stringify({
+                orderId,
+                ...(callbackUrl ? { callbackUrl } : {}),
+                ...(idempotencyKey ? { idempotencyKey } : {})
+            })
+        });
+    }
+    if (action === "verify-payment") {
+        const { reference } = payload as { reference: string };
+        return await apiFetch<T>("/payments/paystack/verify", {
+            method: "POST",
+            body: JSON.stringify({ reference })
+        });
+    }
+    if (action === "admin-verify-payment") {
+        const { reference } = payload as { reference: string };
+        return await apiFetch<T>(`/admin/payments/${encodeURIComponent(reference)}/verify`, { method: "POST" });
+    }
+    if (action === "reconcile-payments") {
+        return await apiFetch<T>("/admin/payments/reconcile");
+    }
     if (action === "set-payment") {
         const { orderId, status } = payload as { orderId: string; status: string };
         // A refund changes the order lifecycle, not just the payment record.

@@ -3,11 +3,12 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/lib/cart-context";
-import type { DeliveryInfo, PaymentMethod } from "@/lib/types";
+import type { DeliveryInfo, PaymentInitialization, PaymentMethod } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { Icon } from "@/components/ui/Icon";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { apiFetch } from "@/lib/api-client";
+import { mutateBackendData } from "@/lib/backend-client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { LoadingState } from "@/components/ui/LoadingState";
 
@@ -62,10 +63,10 @@ function newIdempotencyKey(): string {
     return `checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
-    { value: "card", label: "Pay by Card", icon: "lock" },
-    { value: "bank-transfer", label: "Bank Transfer", icon: "wallet" },
-    { value: "pay-on-delivery", label: "Pay on Delivery", icon: "package" },
+const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; description: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
+    { value: "card", label: "Pay by Card", description: "Secure checkout powered by Paystack", icon: "lock" },
+    { value: "bank-transfer", label: "Bank Transfer", description: "Pay directly from your bank account", icon: "wallet" },
+    { value: "pay-on-delivery", label: "Pay on Delivery", description: "Settle the balance when your order arrives", icon: "package" },
 ];
 
 export function CheckoutView() {
@@ -119,7 +120,6 @@ export function CheckoutView() {
         }
         setSubmitting(true);
         setOrderError("");
-        let id = "";
         try {
             const payment = paymentMethod === "pay-on-delivery" ? "cash-on-delivery" : paymentMethod === "card" ? "paystack" : "bank-transfer";
             const result = await apiFetch<{ id: string; orderNumber: string }>("/orders", {
@@ -127,14 +127,33 @@ export function CheckoutView() {
                 headers: { "idempotency-key": idempotencyKey },
                 body: JSON.stringify({ delivery: deliveryInfo, payment, idempotencyKey })
             });
-            id = result.orderNumber || result.id;
+            const id = result.orderNumber || result.id;
+
+            // For card payments the order starts as PENDING. Start the gateway
+            // transaction here and hand the browser to Paystack's hosted checkout.
+            if (payment === "paystack") {
+                try {
+                    const initialized = await mutateBackendData<PaymentInitialization>("initialize-payment", {
+                        orderId: result.id,
+                        idempotencyKey: `pay-${idempotencyKey}`,
+                        callbackUrl: `${window.location.origin}/orders/${id}?payment=verify`
+                    });
+                    if (initialized.authorizationUrl) {
+                        await clearCart();
+                        window.location.assign(initialized.authorizationUrl);
+                        return;
+                    }
+                } catch {
+                    // The order is saved; the detail view offers a retry action.
+                }
+            }
+
+            await clearCart();
+            router.push(`/orders/${id}${payment === "paystack" ? "?payment=retry" : ""}`);
         } catch (error) {
             setOrderError(error instanceof Error ? error.message : "We could not save your order. Please try again.");
             setSubmitting(false);
-            return;
         }
-        void clearCart();
-        router.push("/orders/" + id);
     }
 
     return (
@@ -296,7 +315,7 @@ export function CheckoutView() {
                     <section aria-label="Payment method">
                         <h2 className="oi-section-title">Choose payment method</h2>
                         <div className="oi-checkout-review">
-                            {PAYMENT_OPTIONS.map(({ value, label, icon }) => (
+                            {PAYMENT_OPTIONS.map(({ value, label, description, icon }) => (
                                 <button
                                     key={value}
                                     type="button"
@@ -307,14 +326,18 @@ export function CheckoutView() {
                                     onClick={() => setPaymentMethod(value)}
                                     aria-pressed={paymentMethod === value}
                                 >
-                                    <Icon name={icon} size={20} />
-                                    <span>{label}</span>
-                                    {paymentMethod === value && (
-                                        <Icon name="check" size={16} style={{ marginLeft: "auto" }} />
-                                    )}
+                                    <span className="oi-payment-option__icon"><Icon name={icon} size={20} /></span>
+                                    <span className="oi-payment-option__copy">
+                                        <strong>{label}</strong>
+                                        <small>{description}</small>
+                                    </span>
+                                    <span className="oi-payment-option__radio" aria-hidden="true">
+                                        {paymentMethod === value && <Icon name="check" size={13} />}
+                                    </span>
                                 </button>
                             ))}
                         </div>
+                        <p className="oi-payment-secure-note"><Icon name="shield" size={15} /> Card details are handled by Paystack. Oilinga never stores your card information.</p>
                         <div style={{ display: "flex", gap: "var(--space-3)", marginTop: "var(--space-6)" }}>
                             {orderError && <p className="oi-form-error" role="alert">{orderError}</p>}
                             <button

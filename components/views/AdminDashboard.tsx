@@ -5,8 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Logo } from "@/components/brand/Logo";
 import { Icon } from "@/components/ui/Icon";
-import type { CustomerOrder, OrderStatusKey } from "@/lib/types";
+import type { CustomerOrder, OrderStatusKey, PaymentRecord, PaymentRefundRecord, ReconciliationReport } from "@/lib/types";
 import { ORDER_TRANSITIONS } from "@/lib/types";
+import { cn } from "@/lib/cn";
 import { mapOrder } from "@/lib/backend-mappers";
 import { readBackendData, mutateBackendData } from "@/lib/backend-client";
 import type { DatabaseShop } from "@/lib/marketplace-contracts";
@@ -36,7 +37,7 @@ type AdminShop = Omit<DatabaseShop, "name" | "status" | "products"> & {
     verificationRequestedAt?: string | null;
     products: AdminProduct[];
 };
-type Tab = "overview" | "users" | "sellers" | "products" | "orders" | "finance" | "subscriptions";
+type Tab = "overview" | "users" | "sellers" | "products" | "orders" | "payments" | "finance" | "subscriptions";
 type AdminRole = "CUSTOMER" | "SELLER" | "ADMIN";
 type AdminUser = {
     id: string;
@@ -49,9 +50,10 @@ type AdminUser = {
 };
 type PaymentState = Record<string, "Pending" | "Confirmed" | "Failed" | "Refunded">;
 type Settlement = { id: string; amount: number; date: string; status: "Recorded locally" };
-const tabs: { id: Tab; label: string; icon: "grid" | "shield" | "store" | "box" | "receipt" | "wallet" | "sparkle" }[] = [
+const tabs: { id: Tab; label: string; icon: "grid" | "shield" | "store" | "box" | "receipt" | "lock" | "wallet" | "sparkle" }[] = [
     { id: "overview", label: "Overview", icon: "grid" }, { id: "users", label: "Users & roles", icon: "shield" }, { id: "sellers", label: "Seller verification", icon: "store" },
-    { id: "products", label: "Shops & products", icon: "box" }, { id: "orders", label: "Orders & payments", icon: "receipt" },
+    { id: "products", label: "Shops & products", icon: "box" }, { id: "orders", label: "Orders", icon: "receipt" },
+    { id: "payments", label: "Payments", icon: "lock" },
     { id: "finance", label: "Commission & settlements", icon: "wallet" }, { id: "subscriptions", label: "Subscriptions", icon: "sparkle" },
 ];
 
@@ -75,6 +77,10 @@ export function AdminDashboard() {
     const [selectedShopSlug, setSelectedShopSlug] = useState("");
     const [orders, setOrders] = useState<CustomerOrder[]>([]);
     const [payments, setPayments] = useState<PaymentState>({});
+    const [paymentRecords, setPaymentRecords] = useState<PaymentRecord[]>([]);
+    const [refundRecords, setRefundRecords] = useState<PaymentRefundRecord[]>([]);
+    const [reconciliation, setReconciliation] = useState<ReconciliationReport | null>(null);
+    const [reconcileBusy, setReconcileBusy] = useState(false);
     const [settlements, setSettlements] = useState<Settlement[]>([]);
     const [commissionRate, setCommissionRate] = useState("0");
     const [categories, setCategories] = useState<Category[]>([]);
@@ -104,8 +110,8 @@ export function AdminDashboard() {
             return;
         }
         let cancelled = false;
-        void readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; settlements: Settlement[]; settings: { commissionRate: number } }>("admin")
-            .then(data => { if (!cancelled) { const records = data.shops.map(record => ({ ...record, shop: record.name, shopStatus: (record.status === "Paused" ? "Paused" : "Active") as AdminShop["shopStatus"] })); setShops(records); setSelectedShopSlug(records[0]?.slug ?? ""); setCategories(data.categories ?? []); setOrders(data.orders); setPayments(data.payments); setSettlements(data.settlements); setCommissionRate(String(data.settings.commissionRate ?? 0)); } })
+        void readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; paymentRecords: PaymentRecord[]; refundRecords: PaymentRefundRecord[]; settlements: Settlement[]; settings: { commissionRate: number } }>("admin")
+            .then(data => { if (!cancelled) { const records = data.shops.map(record => ({ ...record, shop: record.name, shopStatus: (record.status === "Paused" ? "Paused" : "Active") as AdminShop["shopStatus"] })); setShops(records); setSelectedShopSlug(records[0]?.slug ?? ""); setCategories(data.categories ?? []); setOrders(data.orders); setPayments(data.payments); setPaymentRecords(data.paymentRecords ?? []); setRefundRecords(data.refundRecords ?? []); setSettlements(data.settlements); setCommissionRate(String(data.settings.commissionRate ?? 0)); } })
             .catch(error => console.error("Admin data could not be loaded", error))
             .finally(() => { if (!cancelled) setReady(true); });
         return () => { cancelled = true; };
@@ -152,9 +158,11 @@ export function AdminDashboard() {
     }
     async function refreshOrders() {
         try {
-            const data = await readBackendData<{ orders: CustomerOrder[]; payments: PaymentState }>("admin");
+            const data = await readBackendData<{ orders: CustomerOrder[]; payments: PaymentState; paymentRecords: PaymentRecord[]; refundRecords: PaymentRefundRecord[] }>("admin");
             setOrders(data.orders);
             setPayments(data.payments);
+            setPaymentRecords(data.paymentRecords ?? []);
+            setRefundRecords(data.refundRecords ?? []);
             setAdminError("");
         } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not refresh orders."); }
     }
@@ -197,6 +205,33 @@ export function AdminDashboard() {
             setOrderBusy("");
         }
     }
+    async function verifyPaymentRecord(reference: string) {
+        if (orderBusy) return;
+        setOrderBusy(reference);
+        try {
+            await mutateBackendData("admin-verify-payment", { reference });
+            await refreshOrders();
+            setAdminError("");
+            setAdminNotice(`Payment ${reference} verified against Paystack.`);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not verify this payment.");
+        } finally { setOrderBusy(""); }
+    }
+
+    async function reconcilePayments() {
+        if (reconcileBusy) return;
+        setReconcileBusy(true);
+        try {
+            const report = await mutateBackendData<ReconciliationReport>("reconcile-payments", {});
+            setReconciliation(report);
+            await refreshOrders();
+            setAdminError("");
+            setAdminNotice(`Reconciled ${report.checked} payment record${report.checked === 1 ? "" : "s"} with Paystack.`);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not reconcile payments.");
+        } finally { setReconcileBusy(false); }
+    }
+
     function saveCommission(value: string) {
         setCommissionRate(value); void mutateBackendData("set-settings", { settings: { commissionRate: Number(value) || 0 } }).catch(error => console.error("Commission setting update failed", error));
     }
@@ -290,7 +325,7 @@ export function AdminDashboard() {
             </aside>
             <div className="oi-dashboard__content oi-admin__content">
                 <header className="oi-admin__header"><div><span className="oi-eyebrow oi-eyebrow--green">OILINGA ADMIN</span><h1>{title}</h1><p>Review shop operations and marketplace records.</p></div><Link className="oi-btn oi-btn--outline" href="/">View marketplace <Icon name="arrow-right" size={15} /></Link></header>
-                <div className="oi-admin__notice"><Icon name="shield" size={17} /><p>Administrator access is role-gated, and seller verification is managed here. Payment processing, settlements and subscription billing are not live.</p></div>
+                <div className="oi-admin__notice"><Icon name="shield" size={17} /><p>Administrator access is role-gated, and seller verification is managed here. Card payments are processed by Paystack; settlements and subscription billing remain local records.</p></div>
                 {adminError && <p className="oi-form-error" role="alert">{adminError}</p>}
                 {adminNotice && <p className="oi-admin__muted" role="status">{adminNotice}</p>}
 
@@ -431,14 +466,20 @@ export function AdminDashboard() {
                                                         </select>
                                                     </td>
                                                     <td>
-                                                        <select
-                                                            aria-label={`Payment status for ${order.id}`}
-                                                            value={payments[order.id] ?? "Pending"}
-                                                            disabled={busy}
-                                                            onChange={event => void setPayment(order.id, event.target.value as PaymentState[string])}
-                                                        >
-                                                            {["Pending", "Confirmed", "Failed", "Refunded"].map(status => <option key={status}>{status}</option>)}
-                                                        </select>
+                                                        {(() => {
+                                                            const record = paymentRecords.find(item => item.orderId === order.dbId || item.orderNumber === order.id);
+                                                            if (order.payment === "card" || record?.provider === "PAYSTACK") {
+                                                                return <span className={cn("oi-payment-status", `is-${(record?.status ?? "PENDING").toLowerCase()}`)}>{record?.status === "SUCCESS" ? "Confirmed" : record?.status === "PARTIALLY_REFUNDED" ? "Partial refund" : record?.status ?? "Pending"}</span>;
+                                                            }
+                                                            return <select
+                                                                aria-label={`Payment status for ${order.id}`}
+                                                                value={payments[order.id] ?? "Pending"}
+                                                                disabled={busy}
+                                                                onChange={event => void setPayment(order.id, event.target.value as PaymentState[string])}
+                                                            >
+                                                                {["Pending", "Confirmed", "Failed", "Refunded"].map(status => <option key={status}>{status}</option>)}
+                                                            </select>;
+                                                        })()}
                                                     </td>
                                                 </tr>
                                             );
@@ -450,6 +491,103 @@ export function AdminDashboard() {
                             <div className="oi-admin__empty"><Icon name="receipt" size={24} /><h3>No orders to review</h3><p>Orders placed on the marketplace will appear here.</p></div>
                         )}
                     </section>
+                )}
+
+                {tab === "payments" && (
+                    <>
+                        <section className="oi-admin__panel">
+                            <div className="oi-admin__panel-heading">
+                                <div>
+                                    <h2>Payment records</h2>
+                                    <p>Transactions are verified server-side. Gateway amounts and statuses must match the order before fulfilment.</p>
+                                </div>
+                                <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" onClick={() => void reconcilePayments()} disabled={reconcileBusy}>
+                                    <Icon name="shield" size={15} /> {reconcileBusy ? "Reconciling…" : "Reconcile with Paystack"}
+                                </button>
+                            </div>
+
+                            {reconciliation && (
+                                <div className="oi-reconciliation">
+                                    <div className="oi-reconciliation__metrics">
+                                        <article><span>Checked</span><strong>{reconciliation.checked}</strong></article>
+                                        <article><span>Matched</span><strong>{reconciliation.matched}</strong></article>
+                                        <article><span>Mismatches</span><strong className={reconciliation.mismatches.length ? "is-alert" : undefined}>{reconciliation.mismatches.length}</strong></article>
+                                        <article><span>Gateway successful</span><strong>{money(reconciliation.totals.gatewaySuccessfulKobo / 100)}</strong></article>
+                                    </div>
+                                    {reconciliation.mismatches.length === 0 ? (
+                                        <p className="oi-reconciliation__ok"><Icon name="check" size={14} /> Every local payment record agrees with Paystack.</p>
+                                    ) : (
+                                        <div className="oi-admin__table-wrap">
+                                            <table className="oi-admin__table">
+                                                <thead><tr><th>Reference</th><th>Order</th><th>Local</th><th>Gateway</th><th>Issue</th></tr></thead>
+                                                <tbody>
+                                                    {reconciliation.mismatches.map(mismatch => (
+                                                        <tr key={mismatch.reference}>
+                                                            <td><b>{mismatch.reference}</b></td>
+                                                            <td>{mismatch.orderNumber}</td>
+                                                            <td>{mismatch.localStatus} · {money(mismatch.localAmountKobo / 100)}</td>
+                                                            <td>{mismatch.gatewayStatus} · {money(mismatch.gatewayAmountKobo / 100)}</td>
+                                                            <td><span className="oi-payment-status is-failed">{mismatch.issue}</span></td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {paymentRecords.length ? (
+                                <div className="oi-admin__table-wrap">
+                                    <table className="oi-admin__table">
+                                        <thead><tr><th>Reference</th><th>Order</th><th>Customer</th><th>Amount</th><th>Status</th><th>Verified</th><th>Action</th></tr></thead>
+                                        <tbody>
+                                            {paymentRecords.map(payment => (
+                                                <tr key={payment.id}>
+                                                    <td><b>{payment.reference}</b><small>{payment.provider.replaceAll("_", " ").toLowerCase()}</small></td>
+                                                    <td>{payment.orderNumber ?? "—"}</td>
+                                                    <td>{payment.customer ?? "—"}</td>
+                                                    <td><b>{money(payment.amount)}</b><small>{payment.currency}</small></td>
+                                                    <td><span className={cn("oi-payment-status", `is-${payment.status.toLowerCase()}`)}>{payment.status.replaceAll("_", " ").toLowerCase()}</span></td>
+                                                    <td>{payment.verifiedAt ? new Date(payment.verifiedAt).toLocaleString() : "—"}</td>
+                                                    <td>
+                                                        {payment.provider === "PAYSTACK" && payment.status !== "SUCCESS" && payment.status !== "REFUNDED" ? (
+                                                            <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" disabled={orderBusy === payment.reference} onClick={() => void verifyPaymentRecord(payment.reference)}>
+                                                                {orderBusy === payment.reference ? "Checking…" : "Verify"}
+                                                            </button>
+                                                        ) : <span className="oi-admin__muted">—</span>}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : <div className="oi-admin__empty"><Icon name="lock" size={24} /><h3>No payment records yet</h3><p>Customer payments will appear here once an order is paid for.</p></div>}
+                        </section>
+
+                        <section className="oi-admin__panel">
+                            <div className="oi-admin__panel-heading"><div><h2>Refund trail</h2><p>Every gateway refund attempt is recorded with its reference and outcome.</p></div></div>
+                            {refundRecords.length ? (
+                                <div className="oi-admin__table-wrap">
+                                    <table className="oi-admin__table">
+                                        <thead><tr><th>Reference</th><th>Order</th><th>Payment</th><th>Amount</th><th>Status</th><th>Reason</th></tr></thead>
+                                        <tbody>
+                                            {refundRecords.map(refund => (
+                                                <tr key={refund.id}>
+                                                    <td><b>{refund.reference}</b><small>{new Date(refund.createdAt).toLocaleDateString()}</small></td>
+                                                    <td>{refund.orderNumber}</td>
+                                                    <td>{refund.paymentReference}</td>
+                                                    <td><b>{money(refund.amount)}</b></td>
+                                                    <td><span className={cn("oi-payment-status", `is-${refund.status.toLowerCase()}`)}>{refund.status.toLowerCase()}</span></td>
+                                                    <td>{refund.reason ?? "—"}{refund.error ? <small>{refund.error}</small> : null}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : <p className="oi-admin__muted">No refunds have been recorded.</p>}
+                        </section>
+                    </>
                 )}
 
                 {tab === "finance" && <><section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Commission and settlements</h2><p>Estimate fees from delivered order records.</p></div><label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label></div><div className="oi-admin__metrics oi-admin__metrics--finance"><article><span>Delivered order value</span><strong>{money(deliveredGross)}</strong></article><article><span>Estimated commission</span><strong>{money(commission)}</strong></article><article><span>Estimated seller balance</span><strong>{money(Math.max(0, deliveredGross - commission))}</strong></article><article><span>Unsettled estimate</span><strong>{money(unsettled)}</strong></article></div><button className="oi-btn oi-btn--primary" type="button" disabled={unsettled <= 0} onClick={() => { const settlement = { id: `SET-${Date.now()}`, amount: unsettled, date: new Date().toISOString(), status: "Recorded locally" as const }; setSettlements([settlement, ...settlements]); void mutateBackendData("create-settlement", { settlement }).catch(error => console.error("Settlement record failed", error)); }}>Record settlement</button><p className="oi-admin__muted">This records an admin note only. It does not move money or initiate a payout.</p></section><section className="oi-admin__panel"><h2>Settlement records</h2>{settlements.length ? settlements.map(item => <div className="oi-admin__attention" key={item.id}><div><b>{item.id}</b><span>{new Date(item.date).toLocaleString()}</span></div><strong>{money(item.amount)}</strong><span className="oi-admin__badge">{item.status}</span></div>) : <p className="oi-admin__muted">No settlement records.</p>}</section></>}
