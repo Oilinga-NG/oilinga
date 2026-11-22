@@ -9,6 +9,7 @@ export interface ProductMedia {
     url: string;
     alt?: string | null;
     id?: string;
+    isPrimary?: boolean;
 }
 
 export interface Shop {

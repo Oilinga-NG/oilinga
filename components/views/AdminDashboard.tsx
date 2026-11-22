@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Logo } from "@/components/brand/Logo";
-import { Icon } from "@/components/ui/Icon";
+import { Icon, type IconName } from "@/components/ui/Icon";
 import type { CustomerOrder, OrderStatusKey, PaymentRecord, PaymentRefundRecord, ReconciliationReport } from "@/lib/types";
 import { ORDER_TRANSITIONS } from "@/lib/types";
 import { cn } from "@/lib/cn";
@@ -17,6 +17,10 @@ import { LoadingState } from "@/components/ui/LoadingState";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
 import type { Category } from "@/lib/data";
 
+type ModerationStatus = "NONE" | "PENDING" | "APPROVED" | "REJECTED";
+type VerificationStatus = "UNREQUESTED" | "PENDING" | "APPROVED" | "REJECTED";
+type ReviewStatus = "VISIBLE" | "PENDING" | "HIDDEN";
+type SubscriptionStatus = "Active" | "Paused" | "Cancelled";
 type AdminProduct = {
     id?: string;
     dbId?: string;
@@ -25,6 +29,8 @@ type AdminProduct = {
     size: string;
     stock: string;
     status?: "Active" | "Draft" | "Out of stock";
+    moderationStatus?: ModerationStatus;
+    moderationNote?: string | null;
     category?: string;
     description?: string;
     imageUrl?: string | null;
@@ -34,10 +40,13 @@ type AdminShop = Omit<DatabaseShop, "name" | "status" | "products"> & {
     shop: string;
     status?: "Active" | "Paused";
     shopStatus?: "Active" | "Paused";
+    verificationStatus?: VerificationStatus;
+    verificationNote?: string | null;
+    verifiedAt?: string | null;
     verificationRequestedAt?: string | null;
     products: AdminProduct[];
 };
-type Tab = "overview" | "users" | "sellers" | "products" | "orders" | "payments" | "finance" | "subscriptions";
+type Tab = "overview" | "users" | "sellers" | "products" | "orders" | "payments" | "finance" | "subscriptions" | "reviews" | "settings" | "audit" | "permissions";
 type AdminRole = "CUSTOMER" | "SELLER" | "ADMIN";
 type AdminUser = {
     id: string;
@@ -49,7 +58,7 @@ type AdminUser = {
     createdAt: string;
 };
 type PaymentState = Record<string, "Pending" | "Confirmed" | "Failed" | "Refunded">;
-type Settlement = { id: string; amount: number; date: string; status: "Recorded locally" };
+type Settlement = { id: string; amount: number; date: string; status: "Confirmed" | "Recorded" | string };
 type PayoutStatus = "REQUESTED" | "APPROVED" | "REJECTED" | "PROCESSING" | "PAID" | "FAILED" | "CANCELLED";
 type PayoutEvent = { id: string; fromStatus: PayoutStatus | null; toStatus: PayoutStatus; actorName: string | null; actorRole: string | null; note: string | null; reference: string | null; createdAt: string };
 type Payout = {
@@ -69,11 +78,91 @@ type FinanceReport = {
     reconciliation: { available: boolean; checked: number; matched: number; mismatches: number; message?: string; totals: { localSuccessfulKobo: number; gatewaySuccessfulKobo: number; successfulCount: number } };
     bySeller: { sellerId: string; sellerName: string; shops: string; grossSales: number; totalRefunds: number; commission: number; netEarnings: number; paidOut: number; pendingPayouts: number; availableBalance: number; totalOrders: number }[];
 };
-const tabs: { id: Tab; label: string; icon: "grid" | "shield" | "store" | "box" | "receipt" | "lock" | "wallet" | "sparkle" }[] = [
-    { id: "overview", label: "Overview", icon: "grid" }, { id: "users", label: "Users & roles", icon: "shield" }, { id: "sellers", label: "Seller verification", icon: "store" },
-    { id: "products", label: "Shops & products", icon: "box" }, { id: "orders", label: "Orders", icon: "receipt" },
+type AdminPermissions = {
+    canManageFinance: boolean;
+    canManageUsers: boolean;
+    canModerate: boolean;
+    canViewAudit: boolean;
+};
+type PermissionKey = keyof AdminPermissions;
+type PlatformDashboard = {
+    users: { total: number; customers: number; sellers: number; admins: number; active: number; suspended: number };
+    shops: { total: number; verified: number; pendingVerification: number; rejected: number; published: number; suspended: number };
+    products: { total: number; active: number; outOfStock: number; awaitingReview: number; rejected: number };
+    orders: { total: number; pending: number; processing: number; shipped: number; delivered: number; cancelled: number; refunded: number; grossValue: number };
+    payments: { total: number; successful: number; failed: number; refunded: number; successfulVolume: number };
+    finance: { commissionRate: number; settlements: number; settledAmount: number; pendingPayouts: number; payoutAmount: number };
+    reviews: { total: number; visible: number; pending: number; hidden: number; averageRating: number };
+    recentAudit: { id: string; action: string; actorName: string; summary: string; createdAt: string }[];
+};
+type PlatformSettings = { commissionRate: number; reviewModeration: boolean };
+type AdminReview = {
+    id: string;
+    authorName: string;
+    targetType: string;
+    targetName: string;
+    targetSlug: string;
+    rating: number;
+    text: string;
+    status: ReviewStatus;
+    moderationNote: string | null;
+    createdAt: string;
+};
+type PendingShop = {
+    id: string;
+    name: string;
+    slug: string;
+    verified: boolean;
+    published: boolean;
+    status: string;
+    verificationStatus: VerificationStatus;
+    verificationNote: string | null;
+    verificationRequestedAt: string | null;
+    owner?: { id: string; name: string; email: string } | null;
+};
+type ModerationProduct = {
+    id: string;
+    name: string;
+    slug: string;
+    status: string;
+    moderationStatus: ModerationStatus;
+    moderationNote: string | null;
+    price: string | number;
+    shop?: { id: string; name: string; slug: string } | null;
+};
+type AuditItem = {
+    id: string;
+    actorId: string;
+    actorName: string;
+    actorRole: string;
+    action: string;
+    targetType: string;
+    targetId: string | null;
+    summary: string;
+    metadata: Record<string, unknown> | null;
+    createdAt: string;
+};
+type Paginated<T> = { items: T[]; pagination: { page: number; limit: number; total: number; pages: number } };
+type UserPermissionView = { userId: string; role: string; permissions: AdminPermissions };
+const tabs: { id: Tab; label: string; icon: IconName }[] = [
+    { id: "overview", label: "Overview", icon: "grid" },
+    { id: "users", label: "Users & roles", icon: "shield" },
+    { id: "sellers", label: "Seller verification", icon: "store" },
+    { id: "products", label: "Shops & products", icon: "box" },
+    { id: "orders", label: "Orders", icon: "receipt" },
     { id: "payments", label: "Payments", icon: "lock" },
-    { id: "finance", label: "Commission & settlements", icon: "wallet" }, { id: "subscriptions", label: "Subscriptions", icon: "sparkle" },
+    { id: "finance", label: "Commission & settlements", icon: "wallet" },
+    { id: "reviews", label: "Review moderation", icon: "star" },
+    { id: "settings", label: "Platform settings", icon: "settings" },
+    { id: "audit", label: "Audit log", icon: "archive" },
+    { id: "permissions", label: "Permissions", icon: "lock" },
+    { id: "subscriptions", label: "Subscriptions", icon: "sparkle" },
+];
+const permissionLabels: { key: PermissionKey; label: string; detail: string }[] = [
+    { key: "canManageFinance", label: "Financial actions", detail: "Commission, payment verification, payouts and settlements" },
+    { key: "canManageUsers", label: "User administration", detail: "Accounts, roles, recovery, permissions and sessions" },
+    { key: "canModerate", label: "Marketplace moderation", detail: "Shops, products, categories and reviews" },
+    { key: "canViewAudit", label: "Audit history", detail: "Read the platform-wide administrative audit log" },
 ];
 
 function money(value: number) { return `₦${value.toLocaleString("en-NG", { maximumFractionDigits: 2 })}`; }
@@ -123,6 +212,81 @@ export function AdminDashboard() {
     const [userNotice, setUserNotice] = useState("");
     const [orderBusy, setOrderBusy] = useState("");
     const [ready, setReady] = useState(false);
+    const [permissions, setPermissions] = useState<AdminPermissions>({ canManageFinance: false, canManageUsers: false, canModerate: false, canViewAudit: false });
+    const [dashboard, setDashboard] = useState<PlatformDashboard | null>(null);
+    const [settings, setSettings] = useState<PlatformSettings | null>(null);
+    const [pendingShops, setPendingShops] = useState<PendingShop[]>([]);
+    const [moderationProducts, setModerationProducts] = useState<ModerationProduct[]>([]);
+    const [reviews, setReviews] = useState<AdminReview[]>([]);
+    const [reviewFilter, setReviewFilter] = useState<"ALL" | ReviewStatus>("PENDING");
+    const [reviewPage, setReviewPage] = useState(1);
+    const [reviewPagination, setReviewPagination] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
+    const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
+    const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
+    const [auditSearchInput, setAuditSearchInput] = useState("");
+    const [auditSearch, setAuditSearch] = useState("");
+    const [auditPage, setAuditPage] = useState(1);
+    const [auditPagination, setAuditPagination] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
+    const [userPermissions, setUserPermissions] = useState<Record<string, AdminPermissions>>({});
+    const [shopNotes, setShopNotes] = useState<Record<string, string>>({});
+    const [productNotes, setProductNotes] = useState<Record<string, string>>({});
+    const [phase9Busy, setPhase9Busy] = useState("");
+    const [subscriptionBusy, setSubscriptionBusy] = useState("");
+
+    const loadAdminData = useCallback(async () => {
+        const data = await readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; paymentRecords: PaymentRecord[]; refundRecords: PaymentRefundRecord[]; settlements: Settlement[]; settings: { commissionRate: number } }>("admin");
+        const records = data.shops.map(record => ({ ...record, shop: record.name, shopStatus: (record.status === "Paused" ? "Paused" : "Active") as AdminShop["shopStatus"] }));
+        setShops(records);
+        setSelectedShopSlug(current => current && records.some(record => record.slug === current) ? current : records[0]?.slug ?? "");
+        setCategories(data.categories ?? []);
+        setOrders(data.orders);
+        setPayments(data.payments);
+        setPaymentRecords(data.paymentRecords ?? []);
+        setRefundRecords(data.refundRecords ?? []);
+        setSettlements(data.settlements ?? []);
+        setCommissionRate(String((data.settings.commissionRate ?? 0) * 100));
+    }, []);
+
+    const loadDashboard = useCallback(async () => {
+        setDashboard(await readBackendData<PlatformDashboard>("admin-dashboard"));
+    }, []);
+
+    const loadSettings = useCallback(async () => {
+        const data = await readBackendData<PlatformSettings>("admin-settings");
+        setSettings(data);
+        setCommissionRate(String((data.commissionRate ?? 0) * 100));
+    }, []);
+
+    const loadPendingShops = useCallback(async () => {
+        setPendingShops(await readBackendData<PendingShop[]>("admin-pending-shops"));
+    }, []);
+
+    const loadModerationProducts = useCallback(async () => {
+        const data = await readBackendData<Paginated<ModerationProduct>>("admin-moderation-products", { limit: "100" });
+        setModerationProducts(data.items);
+    }, []);
+
+    const loadReviews = useCallback(async () => {
+        const params: Record<string, string> = { page: String(reviewPage), limit: "20" };
+        if (reviewFilter !== "ALL") params.status = reviewFilter;
+        const data = await readBackendData<Paginated<AdminReview>>("admin-reviews", params);
+        setReviews(data.items);
+        setReviewPagination(data.pagination);
+    }, [reviewFilter, reviewPage]);
+
+    const loadAuditLogs = useCallback(async () => {
+        const params: Record<string, string> = { page: String(auditPage), limit: "20" };
+        if (auditSearch) params.search = auditSearch;
+        const data = await readBackendData<Paginated<AuditItem>>("admin-audit-logs", params);
+        setAuditItems(data.items);
+        setAuditPagination(data.pagination);
+    }, [auditPage, auditSearch]);
+
+    const loadUserPermissions = useCallback(async () => {
+        const admins = users.filter(item => item.role === "ADMIN");
+        const rows = await Promise.all(admins.map(item => readBackendData<UserPermissionView>("admin-user-permissions", { id: item.id })));
+        setUserPermissions(Object.fromEntries(rows.map(row => [row.userId, row.permissions])));
+    }, [users]);
 
     useEffect(() => {
         if (!authReady) return;
@@ -135,45 +299,214 @@ export function AdminDashboard() {
             return;
         }
         let cancelled = false;
-        void readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; paymentRecords: PaymentRecord[]; refundRecords: PaymentRefundRecord[]; settlements: Settlement[]; settings: { commissionRate: number } }>("admin")
-            .then(data => { if (!cancelled) { const records = data.shops.map(record => ({ ...record, shop: record.name, shopStatus: (record.status === "Paused" ? "Paused" : "Active") as AdminShop["shopStatus"] })); setShops(records); setSelectedShopSlug(records[0]?.slug ?? ""); setCategories(data.categories ?? []); setOrders(data.orders); setPayments(data.payments); setPaymentRecords(data.paymentRecords ?? []); setRefundRecords(data.refundRecords ?? []); setSettlements(data.settlements); setCommissionRate(String((data.settings.commissionRate ?? 0) * 100)); } })
-            .catch(error => console.error("Admin data could not be loaded", error))
+        void loadAdminData()
+            .catch(error => { if (!cancelled) console.error("Admin data could not be loaded", error); })
             .finally(() => { if (!cancelled) setReady(true); });
+        void loadDashboard().catch(error => { if (!cancelled) console.error("Platform statistics could not be loaded", error); });
         return () => { cancelled = true; };
-    }, [authReady, user, router]);
+    }, [authReady, user, router, loadAdminData, loadDashboard]);
 
     useEffect(() => {
         if (!authReady || user?.role !== "admin") return;
+        let cancelled = false;
+        void readBackendData<AdminPermissions>("admin-permissions")
+            .then(data => { if (!cancelled) setPermissions(data); })
+            .catch(error => { if (!cancelled) setAdminError(error instanceof Error ? error.message : "Could not load administrator permissions."); });
+        return () => { cancelled = true; };
+    }, [authReady, user]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || !permissions.canManageUsers) return;
         let cancelled = false;
         void apiFetch<{ items: AdminUser[] }>("/admin/users?limit=100")
             .then(data => { if (!cancelled) setUsers(data.items); })
             .catch(error => { if (!cancelled) setUserError(error instanceof Error ? error.message : "Could not load users."); });
         return () => { cancelled = true; };
-    }, [authReady, user]);
+    }, [authReady, user, permissions.canManageUsers]);
+
+    useEffect(() => {
+        if (tab === "reviews" && !permissions.canModerate) setTab("overview");
+        if (tab === "audit" && !permissions.canViewAudit) setTab("overview");
+        if (tab === "permissions" && !permissions.canManageUsers) setTab("overview");
+    }, [tab, permissions]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || tab !== "settings") return;
+        void loadSettings().catch(error => setAdminError(error instanceof Error ? error.message : "Could not load platform settings."));
+    }, [authReady, user, tab, loadSettings]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || (tab !== "sellers" && tab !== "overview")) return;
+        void loadPendingShops().catch(error => setAdminError(error instanceof Error ? error.message : "Could not load seller applications."));
+    }, [authReady, user, tab, loadPendingShops]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || tab !== "products" || !permissions.canModerate) return;
+        void loadModerationProducts().catch(error => setAdminError(error instanceof Error ? error.message : "Could not load the product moderation queue."));
+    }, [authReady, user, tab, permissions.canModerate, loadModerationProducts]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || tab !== "reviews" || !permissions.canModerate) return;
+        void loadReviews().catch(error => setAdminError(error instanceof Error ? error.message : "Could not load reviews."));
+    }, [authReady, user, tab, permissions.canModerate, loadReviews]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || tab !== "audit" || !permissions.canViewAudit) return;
+        void loadAuditLogs().catch(error => setAdminError(error instanceof Error ? error.message : "Could not load the audit log."));
+    }, [authReady, user, tab, permissions.canViewAudit, loadAuditLogs]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || tab !== "permissions" || !permissions.canManageUsers || users.length === 0) return;
+        void loadUserPermissions().catch(error => setAdminError(error instanceof Error ? error.message : "Could not load administrator permissions."));
+    }, [authReady, user, tab, permissions.canManageUsers, users, loadUserPermissions]);
 
     async function saveShop(next: AdminShop) {
+        if (!permissions.canModerate) return;
         const updated = next.shopStatus === "Paused" || !next.verified ? { ...next, published: false } : next;
         setShops(current => current.map(item => item.slug === updated.slug ? updated : item));
         const { shop: label, shopStatus, ...fields } = updated;
         const record = { ...fields, name: label, status: shopStatus ?? "Active" };
         try {
             await mutateBackendData("admin-upsert-shop", { shop: record });
-            await refreshMarketplace();
+            await Promise.all([refreshMarketplace(), loadAdminData(), loadDashboard()]);
             setAdminError("");
             setAdminNotice("Shop controls updated.");
         } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not update this shop."); }
     }
 
+    async function setSubscriptionStatus(shop: AdminShop, status: SubscriptionStatus) {
+        if (!permissions.canModerate || subscriptionBusy) return;
+        const shopId = shop.id ?? shop.slug;
+        if (!shopId) { setAdminError("This shop has no backend id, so its subscription cannot be updated."); return; }
+        setSubscriptionBusy(shopId);
+        try {
+            // No optimistic update: the select keeps the backend value until the
+            // mutation succeeds and the authoritative admin data is reloaded.
+            await mutateBackendData("admin-set-subscription-status", { shopId, status });
+            setAdminError("");
+            setAdminNotice(`Subscription for ${shop.shop} set to ${status}.`);
+            await Promise.all([loadAdminData(), loadDashboard(), refreshMarketplace()]);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not update this subscription.");
+            setAdminNotice("");
+        } finally { setSubscriptionBusy(""); }
+    }
+
     async function saveProductStatus(shop: AdminShop, product: AdminProduct, status: NonNullable<AdminProduct["status"]>) {
+        if (!permissions.canModerate) return;
         setShops(current => current.map(item => item.slug === shop.slug
             ? { ...item, products: item.products.map(row => row.id === product.id || row.dbId === product.dbId ? { ...row, status } : row) }
             : item));
         try {
             await mutateBackendData("admin-set-product-status", { id: product.dbId ?? product.id, product: { ...product, status } });
-            await refreshMarketplace();
+            await Promise.all([refreshMarketplace(), loadAdminData()]);
             setAdminError("");
             setAdminNotice("Product status updated.");
         } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not update this product."); }
+    }
+
+    async function decideShop(shop: { id?: string; slug: string }, decision: "approve" | "reject") {
+        if (!permissions.canModerate) return;
+        const id = shop.id ?? shop.slug;
+        const note = (shopNotes[id] ?? "").trim();
+        if (decision === "reject" && !note) {
+            setAdminError("Provide a reason before rejecting a shop verification.");
+            return;
+        }
+        setPhase9Busy(`${decision}-${id}`);
+        try {
+            if (decision === "approve") {
+                await mutateBackendData("admin-approve-shop", { id, note });
+            } else {
+                await mutateBackendData("admin-reject-shop", { id, reason: note });
+            }
+            setShopNotes(current => ({ ...current, [id]: "" }));
+            setAdminError("");
+            setAdminNotice(`Shop verification ${decision === "approve" ? "approved" : "rejected"}.`);
+            await Promise.all([loadAdminData(), loadDashboard(), loadPendingShops(), refreshMarketplace()]);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : `Could not ${decision} this shop.`);
+        } finally { setPhase9Busy(""); }
+    }
+
+    async function moderateProduct(product: ModerationProduct, status: ModerationStatus) {
+        if (!permissions.canModerate) return;
+        setPhase9Busy(`product-${product.id}`);
+        try {
+            await mutateBackendData("admin-moderate-product", { id: product.id, status, note: productNotes[product.id] ?? "" });
+            setProductNotes(current => ({ ...current, [product.id]: "" }));
+            setAdminError("");
+            setAdminNotice(`Product marked ${status.toLowerCase()}.`);
+            await Promise.all([loadModerationProducts(), loadAdminData(), loadDashboard(), refreshMarketplace()]);
+        } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not moderate this product."); }
+        finally { setPhase9Busy(""); }
+    }
+
+    async function moderateReview(review: AdminReview, status: ReviewStatus) {
+        if (!permissions.canModerate) return;
+        setPhase9Busy(`review-${review.id}`);
+        try {
+            await mutateBackendData("admin-moderate-review", { id: review.id, status, note: reviewNotes[review.id] ?? "" });
+            setAdminError("");
+            setAdminNotice(`Review marked ${status.toLowerCase()}.`);
+            await Promise.all([loadReviews(), loadDashboard()]);
+        } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not moderate this review."); }
+        finally { setPhase9Busy(""); }
+    }
+
+    async function removeReview(review: AdminReview) {
+        if (!permissions.canModerate) return;
+        if (!window.confirm(`Delete the review by ${review.authorName}?`)) return;
+        setPhase9Busy(`review-${review.id}`);
+        try {
+            await mutateBackendData("admin-delete-review", { id: review.id });
+            setAdminError("");
+            setAdminNotice("Review deleted.");
+            await Promise.all([loadReviews(), loadDashboard()]);
+        } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not delete this review."); }
+        finally { setPhase9Busy(""); }
+    }
+
+    async function updateReviewSetting(enabled: boolean) {
+        if (!permissions.canModerate) return;
+        setPhase9Busy("review-setting");
+        try {
+            await mutateBackendData("admin-set-review-moderation", { enabled });
+            setAdminError("");
+            setAdminNotice(`New reviews will now be published ${enabled ? "after approval" : "immediately"}.`);
+            await Promise.all([loadSettings(), loadDashboard()]);
+        } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not update review moderation."); }
+        finally { setPhase9Busy(""); }
+    }
+
+    async function updateUserPermission(userId: string, key: PermissionKey, value: boolean) {
+        if (!permissions.canManageUsers) return;
+        setPhase9Busy(`permission-${userId}-${key}`);
+        try {
+            await mutateBackendData("admin-update-user-permissions", { id: userId, permissions: { [key]: value } });
+            setUserPermissions(current => {
+                const base: AdminPermissions = current[userId] ?? { canManageFinance: false, canManageUsers: false, canModerate: false, canViewAudit: false };
+                return { ...current, [userId]: { ...base, [key]: value } };
+            });
+            if (userId === user?.id) setPermissions(current => ({ ...current, [key]: value }));
+            setAdminError("");
+            setAdminNotice("Administrator permissions updated.");
+            await loadDashboard();
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not update permissions.");
+            await loadUserPermissions().catch(() => undefined);
+        } finally { setPhase9Busy(""); }
+    }
+
+    async function revokeSessions(userId: string) {
+        if (!permissions.canManageUsers) return;
+        setPhase9Busy(`sessions-${userId}`);
+        try {
+            await mutateBackendData("admin-revoke-sessions", { id: userId });
+            setAdminError("");
+            setAdminNotice("Active sessions revoked.");
+        } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not revoke sessions."); }
+        finally { setPhase9Busy(""); }
     }
 
     function beginCategoryEdit(category: Category) {
@@ -212,7 +545,7 @@ export function AdminDashboard() {
     }
 
     async function setPayment(orderId: string, status: PaymentState[string]) {
-        if (orderBusy) return;
+        if (orderBusy || !permissions.canManageFinance) return;
         setOrderBusy(orderId);
         try {
             if (status === "Refunded") {
@@ -231,7 +564,7 @@ export function AdminDashboard() {
         }
     }
     async function verifyPaymentRecord(reference: string) {
-        if (orderBusy) return;
+        if (orderBusy || !permissions.canManageFinance) return;
         setOrderBusy(reference);
         try {
             await mutateBackendData("admin-verify-payment", { reference });
@@ -257,10 +590,16 @@ export function AdminDashboard() {
         } finally { setReconcileBusy(false); }
     }
 
-    function saveCommission(value: string) {
-        setCommissionRate(value); void mutateBackendData("set-settings", { settings: { commissionRate: Number(value) || 0 } })
-            .then(() => void loadFinance())
-            .catch(error => { setAdminError(error instanceof Error ? error.message : "Could not update the commission rate."); });
+    async function saveCommission(value: string) {
+        if (!permissions.canManageFinance) return;
+        const rate = Math.min(100, Math.max(0, Number(value) || 0));
+        setCommissionRate(String(rate));
+        try {
+            await mutateBackendData("set-settings", { settings: { commissionRate: rate } });
+            setAdminError("");
+            setAdminNotice(`Commission rate set to ${rate}%.`);
+            await Promise.all([loadSettings(), loadDashboard(), loadFinance()]);
+        } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not update the commission rate."); }
     }
 
     async function loadFinance() {
@@ -290,6 +629,7 @@ export function AdminDashboard() {
     }
 
     async function processPayout(id: string, action: "approve-payout" | "reject-payout" | "mark-payout-paid" | "fail-payout") {
+        if (!permissions.canManageFinance) return;
         setFinanceBusy(id);
         try {
             const body: Record<string, unknown> = {};
@@ -310,6 +650,7 @@ export function AdminDashboard() {
 
     async function recordAdjustment(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        if (!permissions.canManageFinance) return;
         const shop = shops.find(item => item.id === adjustment.shopId || item.slug === adjustment.shopId);
         const amount = Number(adjustment.amount);
         if (!shop || !Number.isFinite(amount) || amount <= 0 || !adjustment.reference.trim()) {
@@ -330,6 +671,7 @@ export function AdminDashboard() {
 
     async function addCategory(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        if (!permissions.canModerate) return;
         const name = categoryName.trim();
         const id = name.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
         if (!id || categories.some(category => category.id === id)) { setCategoryError("Enter a unique category name."); return; }
@@ -345,7 +687,7 @@ export function AdminDashboard() {
 
     async function saveCategory(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        if (!editingCategoryId) return;
+        if (!editingCategoryId || !permissions.canModerate) return;
         setCategoryError("");
         try {
             const category = await mutateBackendData<Category>("update-category", { category: { id: editingCategoryId, ...categoryDraft } });
@@ -357,6 +699,7 @@ export function AdminDashboard() {
     }
 
     async function deleteCategory(id: string) {
+        if (!permissions.canModerate) return;
         const category = categories.find(item => item.id === id);
         if (!category || !window.confirm(`Delete the ${category.name} category? Products using it will be uncategorised.`)) return;
         try {
@@ -369,6 +712,7 @@ export function AdminDashboard() {
     }
 
     async function saveUser(id: string, patch: Partial<Pick<AdminUser, "name" | "role" | "status">> & { emailVerified?: boolean }) {
+        if (!permissions.canManageUsers) return;
         setUserError("");
         try {
             const updated = await apiFetch<AdminUser>(`/admin/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
@@ -379,6 +723,7 @@ export function AdminDashboard() {
 
     async function createUser(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        if (!permissions.canManageUsers) return;
         setUserError("");
         try {
             const result = await apiFetch<{ user: AdminUser }>("/admin/users", {
@@ -392,6 +737,7 @@ export function AdminDashboard() {
     }
 
     async function sendPasswordReset(id: string) {
+        if (!permissions.canManageUsers) return;
         setUserError("");
         try {
             const result = await apiFetch<{ devToken?: string }>(`/admin/users/${id}/send-password-reset`, { method: "POST" });
@@ -402,39 +748,67 @@ export function AdminDashboard() {
     if (!authReady || !ready || !user || user.role !== "admin") return <LoadingState label="Checking administrator access" />;
     const shop = shops.find(item => item.slug === selectedShopSlug) ?? shops[0] ?? null;
     const title = tabs.find(item => item.id === tab)?.label ?? "Overview";
+    const visibleTabs = tabs.filter(item => {
+        if (item.id === "reviews") return permissions.canModerate;
+        if (item.id === "audit") return permissions.canViewAudit;
+        if (item.id === "permissions") return permissions.canManageUsers;
+        return true;
+    });
 
     return <section className="oi-view oi-container oi-admin">
         <div className="oi-dashboard oi-admin__layout">
             <aside className="oi-sidebar">
                 <div className="oi-sidebar__brand"><Logo size="sm" alt="Oilinga" /></div>
                 <small className="oi-sidebar__label">ADMINISTRATION</small>
-                <nav className="oi-sidebar__nav" aria-label="Admin navigation">{tabs.map(item => <button key={item.id} type="button" className={`oi-sidebar__link${tab === item.id ? " is-active" : ""}`} aria-current={tab === item.id ? "page" : undefined} onClick={() => setTab(item.id)}><Icon name={item.icon} size={16} />{item.label}</button>)}</nav>
-                <div className="oi-sidebar__profile"><span className="oi-avatar">AD</span><div className="oi-sidebar__profile-text"><b className="oi-sidebar__profile-name">Admin workspace</b><small className="oi-sidebar__profile-meta">Local prototype</small></div></div>
+                <nav className="oi-sidebar__nav" aria-label="Admin navigation">{visibleTabs.map(item => <button key={item.id} type="button" className={`oi-sidebar__link${tab === item.id ? " is-active" : ""}`} aria-current={tab === item.id ? "page" : undefined} onClick={() => setTab(item.id)}><Icon name={item.icon} size={16} />{item.label}</button>)}</nav>
+                <div className="oi-sidebar__profile"><span className="oi-avatar">AD</span><div className="oi-sidebar__profile-text"><b className="oi-sidebar__profile-name">{user.name ?? "Administrator"}</b><small className="oi-sidebar__profile-meta">Backend connected</small></div></div>
             </aside>
             <div className="oi-dashboard__content oi-admin__content">
-                <header className="oi-admin__header"><div><span className="oi-eyebrow oi-eyebrow--green">OILINGA ADMIN</span><h1>{title}</h1><p>Review shop operations and marketplace records.</p></div><Link className="oi-btn oi-btn--outline" href="/">View marketplace <Icon name="arrow-right" size={15} /></Link></header>
-                <div className="oi-admin__notice"><Icon name="shield" size={17} /><p>Administrator access is role-gated, and seller verification is managed here. Card payments are processed by Paystack; settlements and subscription billing remain local records.</p></div>
+                <header className="oi-admin__header"><div><span className="oi-eyebrow oi-eyebrow--green">OILINGA ADMIN</span><h1>{title}</h1><p>Platform-wide operations, moderation and financial oversight.</p></div><Link className="oi-btn oi-btn--outline" href="/">View marketplace <Icon name="arrow-right" size={15} /></Link></header>
+                <div className="oi-admin__notice"><Icon name="shield" size={17} /><p>Administrative access is role-gated and every mutation is written to the audit log. Financial actions require an explicit capability. Card payments are verified server-side through Paystack.</p></div>
                 {adminError && <p className="oi-form-error" role="alert">{adminError}</p>}
                 {adminNotice && <p className="oi-admin__muted" role="status">{adminNotice}</p>}
 
                 {tab === "overview" && <>
-                    <div className="oi-admin__metrics"><article><span>Registered shops</span><strong>{shops.length}</strong></article><article><span>Awaiting verification</span><strong>{shops.filter(item => !item.verified).length}</strong></article><article><span>Products</span><strong>{shops.reduce((count, item) => count + item.products.length, 0)}</strong></article><article><span>Orders</span><strong>{orders.length}</strong></article><article><span>Gross sales</span><strong>{money(financeReport?.totals.grossSales ?? 0)}</strong></article><article><span>Available balance</span><strong>{money(financeReport?.totals.availableBalance ?? 0)}</strong></article></div>
-                    <section className="oi-admin__panel"><h2>Needs attention</h2>{shops.filter(item => !item.verified).length ? shops.filter(item => !item.verified).map(item => <div className="oi-admin__attention" key={item.slug}><div><b>{item.shop}</b><span>{item.owner} · {item.location}</span></div><button className="oi-btn oi-btn--primary oi-btn--sm" type="button" onClick={() => { setSelectedShopSlug(item.slug); setTab("sellers"); }}>Review seller</button></div>) : <p className="oi-admin__muted">No seller verification is pending.</p>}{orders.length === 0 && <p className="oi-admin__muted">There are no local order records yet.</p>}</section>
+                    <div className="oi-admin__metrics">
+                        <article><span>Platform users</span><strong>{dashboard?.users.total ?? "—"}</strong></article>
+                        <article><span>Active sellers</span><strong>{dashboard?.users.sellers ?? "—"}</strong></article>
+                        <article><span>Verified shops</span><strong>{dashboard ? `${dashboard.shops.verified}/${dashboard.shops.total}` : "—"}</strong></article>
+                        <article><span>Pending verification</span><strong>{dashboard?.shops.pendingVerification ?? "—"}</strong></article>
+                        <article><span>Live products</span><strong>{dashboard?.products.active ?? "—"}</strong></article>
+                        <article><span>Orders</span><strong>{dashboard?.orders.total ?? "—"}</strong></article>
+                        <article><span>Successful payments</span><strong>{dashboard?.payments.successful ?? "—"}</strong></article>
+                        <article><span>Reviews awaiting review</span><strong>{dashboard?.reviews.pending ?? "—"}</strong></article>
+                    </div>
+                    <div className="oi-admin__metrics oi-admin__metrics--finance">
+                        <article><span>Gross order value</span><strong>{money(dashboard?.orders.grossValue ?? 0)}</strong></article>
+                        <article><span>Commission rate</span><strong>{((dashboard?.finance.commissionRate ?? 0) * 100).toFixed(1)}%</strong></article>
+                        <article><span>Settled to sellers</span><strong>{money(dashboard?.finance.settledAmount ?? 0)}</strong></article>
+                        <article><span>Pending payouts</span><strong>{money(dashboard?.finance.payoutAmount ?? 0)}</strong></article>
+                    </div>
+                    <section className="oi-admin__panel"><h2>Needs attention</h2>
+                        {pendingShops.length ? pendingShops.map(item => <div className="oi-admin__attention" key={item.id}><div><b>{item.name}</b><span>{item.owner?.name ?? item.slug} · {item.verificationRequestedAt ? new Date(item.verificationRequestedAt).toLocaleDateString() : "Application received"}</span></div><button className="oi-btn oi-btn--primary oi-btn--sm" type="button" onClick={() => { setSelectedShopSlug(item.slug); setTab("sellers"); }}>Review seller</button></div>)
+                            : shops.filter(item => !item.verified).map(item => <div className="oi-admin__attention" key={item.slug}><div><b>{item.shop}</b><span>{item.owner} · {item.location}</span></div><button className="oi-btn oi-btn--primary oi-btn--sm" type="button" onClick={() => { setSelectedShopSlug(item.slug); setTab("sellers"); }}>Review seller</button></div>)}
+                        {pendingShops.length === 0 && shops.filter(item => !item.verified).length === 0 && <p className="oi-admin__muted">No seller verification is pending.</p>}
+                        {dashboard?.orders.total === 0 && <p className="oi-admin__muted">No orders have been placed yet.</p>}
+                    </section>
+                    {permissions.canViewAudit && dashboard?.recentAudit.length ? <section className="oi-admin__panel"><h2>Recent administrative activity</h2><div className="oi-admin__audit">{dashboard.recentAudit.map(item => <div className="oi-admin__attention" key={item.id}><div><b>{item.action.replaceAll("_", " ").toLowerCase()}</b><span>{item.actorName} · {new Date(item.createdAt).toLocaleString()}</span></div><span>{item.summary}</span></div>)}</div></section> : null}
                 </>}
 
                 {tab === "users" && <>
                     <section className="oi-admin__panel">
                         <div className="oi-admin__panel-heading"><div><h2>Accounts and roles</h2><p>Manage customer, seller and administrator access.</p></div></div>
+                        {!permissions.canManageUsers && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> User administration is disabled for this account. Contact an administrator with user-management access to make changes.</p>}
                         {userError && <p className="oi-form-error" role="alert">{userError}</p>}
                         {userNotice && <p className="oi-admin__muted" role="status">{userNotice}</p>}
                         <div className="oi-admin__table-wrap">
                             <table className="oi-admin__table"><thead><tr><th>User</th><th>Role</th><th>Email</th><th>Status</th><th>Recovery</th></tr></thead><tbody>
                                 {users.map(item => <tr key={item.id}>
                                     <td><b>{item.name}</b><small>{item.emailVerifiedAt ? "Email verified" : "Email unverified"}</small></td>
-                                    <td><select aria-label={`Role for ${item.email}`} value={item.role} onChange={event => saveUser(item.id, { role: event.target.value as AdminRole })}><option>CUSTOMER</option><option>SELLER</option><option>ADMIN</option></select></td>
+                                    <td><select aria-label={`Role for ${item.email}`} value={item.role} disabled={!permissions.canManageUsers} onChange={event => saveUser(item.id, { role: event.target.value as AdminRole })}><option>CUSTOMER</option><option>SELLER</option><option>ADMIN</option></select></td>
                                     <td>{item.email}</td>
-                                    <td><select aria-label={`Status for ${item.email}`} value={item.status} onChange={event => saveUser(item.id, { status: event.target.value as AdminUser["status"] })}><option>ACTIVE</option><option>INACTIVE</option><option>SUSPENDED</option></select></td>
-                                    <td><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => sendPasswordReset(item.id)}>Send reset</button></td>
+                                    <td><select aria-label={`Status for ${item.email}`} value={item.status} disabled={!permissions.canManageUsers} onChange={event => saveUser(item.id, { status: event.target.value as AdminUser["status"] })}><option>ACTIVE</option><option>INACTIVE</option><option>SUSPENDED</option></select></td>
+                                    <td><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={!permissions.canManageUsers} onClick={() => sendPasswordReset(item.id)}>Send reset</button></td>
                                 </tr>)}
                             </tbody></table>
                             {users.length === 0 && <p className="oi-admin__muted">No accounts found.</p>}
@@ -443,60 +817,115 @@ export function AdminDashboard() {
                     <section className="oi-admin__panel">
                         <div className="oi-admin__panel-heading"><div><h2>Provision an account</h2><p>Create a customer, seller or administrator account with a hashed password.</p></div></div>
                         <form className="oi-admin__category-form" onSubmit={createUser}>
-                            <label>Full name<input required value={newUser.name} onChange={event => setNewUser({ ...newUser, name: event.target.value })} placeholder="Amina Okafor" /></label>
-                            <label>Email address<input required type="email" value={newUser.email} onChange={event => setNewUser({ ...newUser, email: event.target.value })} placeholder="amina@example.com" /></label>
-                            <label>Temporary password<input required type="password" minLength={12} value={newUser.password} onChange={event => setNewUser({ ...newUser, password: event.target.value })} placeholder="At least 12 characters" /></label>
-                            <label>Role<select value={newUser.role} onChange={event => setNewUser({ ...newUser, role: event.target.value as AdminRole })}><option>CUSTOMER</option><option>SELLER</option><option>ADMIN</option></select></label>
-                            <label className="oi-check"><input type="checkbox" checked={newUser.emailVerified} onChange={event => setNewUser({ ...newUser, emailVerified: event.target.checked })} /><span>Mark this email as verified</span></label>
-                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit">Create account</button>
+                            <label>Full name<input required disabled={!permissions.canManageUsers} value={newUser.name} onChange={event => setNewUser({ ...newUser, name: event.target.value })} placeholder="Amina Okafor" /></label>
+                            <label>Email address<input required disabled={!permissions.canManageUsers} type="email" value={newUser.email} onChange={event => setNewUser({ ...newUser, email: event.target.value })} placeholder="amina@example.com" /></label>
+                            <label>Temporary password<input required disabled={!permissions.canManageUsers} type="password" minLength={12} value={newUser.password} onChange={event => setNewUser({ ...newUser, password: event.target.value })} placeholder="At least 12 characters" /></label>
+                            <label>Role<select disabled={!permissions.canManageUsers} value={newUser.role} onChange={event => setNewUser({ ...newUser, role: event.target.value as AdminRole })}><option>CUSTOMER</option><option>SELLER</option><option>ADMIN</option></select></label>
+                            <label className="oi-check"><input type="checkbox" disabled={!permissions.canManageUsers} checked={newUser.emailVerified} onChange={event => setNewUser({ ...newUser, emailVerified: event.target.checked })} /><span>Mark this email as verified</span></label>
+                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={!permissions.canManageUsers}>Create account</button>
                         </form>
                     </section>
                 </>}
 
-                {tab === "sellers" && <section className="oi-admin__panel">
-                    <div className="oi-admin__panel-heading"><div><h2>Seller applications</h2><p>Verify shop profiles before sellers can publish. Pausing a shop also unpublishes it.</p></div></div>
-                    {shops.length ? shops.map(item => <article className="oi-admin__seller-card" key={item.slug}>
-                        <div className="oi-admin__seller-avatar">{item.shop.slice(0, 2).toUpperCase()}</div>
-                        <div className="oi-admin__seller-main"><h3>{item.shop}</h3><p>{item.owner} · {item.location}</p><small>{item.tagline || "No shop introduction provided."}</small>{item.verificationRequestedAt && <small>Requested {new Date(item.verificationRequestedAt).toLocaleDateString()}</small>}</div>
-                        <span className={`oi-admin__badge${item.verified ? " is-approved" : ""}`}>{item.verified ? "Verified" : "Pending review"}</span>
-                        <div className="oi-admin__seller-actions">
-                            <label>Status<select aria-label={`Status for ${item.shop}`} value={item.shopStatus ?? "Active"} onChange={event => void saveShop({ ...item, shopStatus: event.target.value as AdminShop["shopStatus"] })}><option>Active</option><option>Paused</option></select></label>
-                            {item.published && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => void saveShop({ ...item, published: false })}>Unpublish</button>}
-                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" onClick={() => void saveShop({ ...item, verified: !item.verified, published: item.verified ? false : item.published })}>{item.verified ? "Revoke verification" : "Verify seller"}</button>
-                        </div>
-                    </article>) : <p className="oi-admin__muted">No seller shops have been registered.</p>}
-                </section>}
+                {tab === "sellers" && <>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Seller applications</h2><p>Review verification requests. Approvals allow publication; rejections require a recorded reason.</p></div><span className="oi-admin__muted">{pendingShops.length} pending</span></div>
+                        {!permissions.canModerate && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Marketplace moderation is disabled for this account, so verification decisions are read-only.</p>}
+                        {pendingShops.length ? pendingShops.map(shop => <article className="oi-admin__seller-card" key={shop.id}>
+                            <div className="oi-admin__seller-avatar">{shop.name.slice(0, 2).toUpperCase()}</div>
+                            <div className="oi-admin__seller-main">
+                                <h3>{shop.name}</h3>
+                                <p>{shop.owner?.name ?? "Unknown owner"} · {shop.owner?.email ?? shop.slug}</p>
+                                <small>{shop.verificationRequestedAt ? `Requested ${new Date(shop.verificationRequestedAt).toLocaleString()}` : "Verification requested"}</small>
+                                {shop.verificationNote && <small>Previous note: {shop.verificationNote}</small>}
+                            </div>
+                            <span className={`oi-admin__badge${shop.verificationStatus === "REJECTED" ? " is-rejected" : " is-pending"}`}>{shop.verificationStatus.toLowerCase()}</span>
+                            <div className="oi-admin__seller-actions">
+                                <input className="oi-admin__decision-note" aria-label={`Decision note for ${shop.name}`} value={shopNotes[shop.id] ?? ""} disabled={!permissions.canModerate || Boolean(phase9Busy)} placeholder="Approval note or rejection reason" onChange={event => setShopNotes(current => ({ ...current, [shop.id]: event.target.value }))} />
+                                <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={!permissions.canModerate || phase9Busy === `approve-${shop.id}`} onClick={() => void decideShop(shop, "approve")}>{phase9Busy === `approve-${shop.id}` ? "Approving…" : "Approve"}</button>
+                                <button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={!permissions.canModerate || phase9Busy === `reject-${shop.id}`} onClick={() => void decideShop(shop, "reject")}>{phase9Busy === `reject-${shop.id}` ? "Rejecting…" : "Reject"}</button>
+                            </div>
+                        </article>) : <p className="oi-admin__muted">No verification applications are pending.</p>}
+                    </section>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Shop controls</h2><p>Pause a storefront, manage verification or jump to its product catalogue.</p></div><span className="oi-admin__muted">{shops.length} registered</span></div>
+                        {shops.length ? shops.map(item => {
+                            const statusLabel = item.verificationStatus === "REJECTED" ? "Rejected" : item.verified ? "Verified" : item.verificationStatus === "PENDING" ? "Pending" : "Unverified";
+                            const badgeClass = item.verified ? " is-approved" : item.verificationStatus === "REJECTED" ? " is-rejected" : " is-pending";
+                            return <article className="oi-admin__seller-card" key={item.slug}>
+                                <div className="oi-admin__seller-avatar">{item.shop.slice(0, 2).toUpperCase()}</div>
+                                <div className="oi-admin__seller-main">
+                                    <h3>{item.shop}</h3><p>{item.owner} · {item.location}</p>
+                                    <small>{item.tagline || "No shop introduction provided."}</small>
+                                    {item.verificationNote && <small>Verification note: {item.verificationNote}</small>}
+                                </div>
+                                <span className={`oi-admin__badge${badgeClass}`}>{statusLabel}</span>
+                                <div className="oi-admin__seller-actions">
+                                    <label>Status<select aria-label={`Status for ${item.shop}`} value={item.shopStatus ?? "Active"} disabled={!permissions.canModerate} onChange={event => void saveShop({ ...item, shopStatus: event.target.value as AdminShop["shopStatus"] })}><option>Active</option><option>Paused</option></select></label>
+                                    <input className="oi-admin__decision-note" aria-label={`Verification note for ${item.shop}`} value={shopNotes[item.id ?? item.slug] ?? ""} disabled={!permissions.canModerate || Boolean(phase9Busy)} placeholder={item.verified ? "Reason for revoking verification" : "Approval note or rejection reason"} onChange={event => setShopNotes(current => ({ ...current, [item.id ?? item.slug]: event.target.value }))} />
+                                    {item.published && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={!permissions.canModerate} onClick={() => void saveShop({ ...item, published: false })}>Unpublish</button>}
+                                    {!item.verified ? <>
+                                        <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={!permissions.canModerate || phase9Busy === `approve-${item.id ?? item.slug}`} onClick={() => void decideShop(item, "approve")}>Approve</button>
+                                        <button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={!permissions.canModerate || phase9Busy === `reject-${item.id ?? item.slug}`} onClick={() => void decideShop(item, "reject")}>Reject</button>
+                                    </> : <button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={!permissions.canModerate || phase9Busy === `reject-${item.id ?? item.slug}`} onClick={() => void decideShop(item, "reject")}>Revoke verification</button>}
+                                    <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => { setSelectedShopSlug(item.slug); setTab("products"); }}>Products</button>
+                                </div>
+                            </article>;
+                        }) : <p className="oi-admin__muted">No seller shops have been registered.</p>}
+                    </section>
+                </>}
 
                 {tab === "products" && <>
                     <section className="oi-admin__panel">
                         <div className="oi-admin__panel-heading"><div><h2>Product categories</h2><p>Manage the categories sellers can choose when they add products.</p></div></div>
+                        {!permissions.canModerate && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Category changes require marketplace moderation access.</p>}
                         <div className="oi-admin__category-list">{categories.map(category => editingCategoryId === category.id
                             ? <form className="oi-admin__category-chip oi-admin__category-chip--editing" key={category.id} onSubmit={saveCategory}>
-                                <label>Name<input required value={categoryDraft.name} onChange={event => setCategoryDraft({ ...categoryDraft, name: event.target.value })} /></label>
-                                <label>Description<input value={categoryDraft.caption} onChange={event => setCategoryDraft({ ...categoryDraft, caption: event.target.value })} /></label>
-                                <label>Icon<input maxLength={8} value={categoryDraft.glyph} onChange={event => setCategoryDraft({ ...categoryDraft, glyph: event.target.value })} /></label>
-                                <div className="oi-admin__category-actions"><button className="oi-btn oi-btn--primary oi-btn--sm" type="submit">Save</button><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => setEditingCategoryId("")}>Cancel</button></div>
+                                <label>Name<input required disabled={!permissions.canModerate} value={categoryDraft.name} onChange={event => setCategoryDraft({ ...categoryDraft, name: event.target.value })} /></label>
+                                <label>Description<input disabled={!permissions.canModerate} value={categoryDraft.caption} onChange={event => setCategoryDraft({ ...categoryDraft, caption: event.target.value })} /></label>
+                                <label>Icon<input maxLength={8} disabled={!permissions.canModerate} value={categoryDraft.glyph} onChange={event => setCategoryDraft({ ...categoryDraft, glyph: event.target.value })} /></label>
+                                <div className="oi-admin__category-actions"><button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={!permissions.canModerate}>Save</button><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => setEditingCategoryId("")}>Cancel</button></div>
                             </form>
                             : <div className="oi-admin__category-chip" key={category.id}>
                                 <span aria-hidden="true">{category.glyph}</span><b>{category.name}</b><small>{category.caption}</small><small>{category.id}</small>
-                                <div className="oi-admin__category-actions"><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => beginCategoryEdit(category)}>Edit</button><button className="oi-btn oi-btn--danger oi-btn--sm" type="button" onClick={() => void deleteCategory(category.id)}>Delete</button></div>
+                                <div className="oi-admin__category-actions"><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={!permissions.canModerate} onClick={() => beginCategoryEdit(category)}>Edit</button><button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={!permissions.canModerate} onClick={() => void deleteCategory(category.id)}>Delete</button></div>
                             </div>)}</div>
                         <form className="oi-admin__category-form" onSubmit={addCategory}>
-                            <label>Category name<input required value={categoryName} onChange={event => setCategoryName(event.target.value)} placeholder="e.g. Shea Oil" /></label>
-                            <label>Description<input value={categoryCaption} onChange={event => setCategoryCaption(event.target.value)} placeholder="Short category description" /></label>
-                            <label>Icon<input value={categoryGlyph} onChange={event => setCategoryGlyph(event.target.value)} maxLength={8} placeholder="🫙" /></label>
-                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit">Add category</button>
+                            <label>Category name<input required disabled={!permissions.canModerate} value={categoryName} onChange={event => setCategoryName(event.target.value)} placeholder="e.g. Shea Oil" /></label>
+                            <label>Description<input disabled={!permissions.canModerate} value={categoryCaption} onChange={event => setCategoryCaption(event.target.value)} placeholder="Short category description" /></label>
+                            <label>Icon<input disabled={!permissions.canModerate} value={categoryGlyph} onChange={event => setCategoryGlyph(event.target.value)} maxLength={8} placeholder="🫙" /></label>
+                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={!permissions.canModerate}>Add category</button>
                         </form>
                         {categoryError && <p className="oi-form-error" role="alert">{categoryError}</p>}
                     </section>
+                    {permissions.canModerate && <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Product moderation queue</h2><p>Flagged listings stay out of the public catalogue until an administrator approves them.</p></div><span className="oi-admin__muted">{moderationProducts.length} flagged</span></div>
+                        {moderationProducts.length ? <div className="oi-admin__table-wrap">
+                            <table className="oi-admin__table">
+                                <thead><tr><th>Product</th><th>Shop</th><th>Moderation</th><th>Decision note</th><th>Actions</th></tr></thead>
+                                <tbody>{moderationProducts.map(product => <tr key={product.id}>
+                                    <td><b>{product.name}</b><small>{product.slug} · {money(Number(product.price) || 0)}</small></td>
+                                    <td>{product.shop?.name ?? product.shop?.slug ?? "—"}</td>
+                                    <td><span className={`oi-admin__badge${product.moderationStatus === "APPROVED" ? " is-approved" : product.moderationStatus === "REJECTED" ? " is-rejected" : " is-pending"}`}>{product.moderationStatus.toLowerCase()}</span>{product.moderationNote && <small>{product.moderationNote}</small>}</td>
+                                    <td><input className="oi-admin__decision-note" aria-label={`Moderation note for ${product.name}`} value={productNotes[product.id] ?? ""} disabled={Boolean(phase9Busy)} placeholder="Optional note" onChange={event => setProductNotes(current => ({ ...current, [product.id]: event.target.value }))} /></td>
+                                    <td><div className="oi-admin__row-actions">
+                                        <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={phase9Busy === `product-${product.id}`} onClick={() => void moderateProduct(product, "APPROVED")}>Approve</button>
+                                        <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={phase9Busy === `product-${product.id}`} onClick={() => void moderateProduct(product, "PENDING")}>Hold</button>
+                                        <button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={phase9Busy === `product-${product.id}`} onClick={() => void moderateProduct(product, "REJECTED")}>Reject</button>
+                                    </div></td>
+                                </tr>)}</tbody>
+                            </table>
+                        </div> : <p className="oi-admin__muted">No products are awaiting moderation.</p>}
+                    </section>}
                     <section className="oi-admin__panel">
                         <div className="oi-admin__panel-heading"><div><h2>Shop and product management</h2><p>Pause a storefront or change individual listing status. Changes write to the catalogue immediately.</p></div>{shops.length > 1 && <label className="oi-admin__rate">Select shop<select value={shop?.slug ?? ""} onChange={event => setSelectedShopSlug(event.target.value)}>{shops.map(item => <option key={item.slug} value={item.slug}>{item.shop}</option>)}</select></label>}</div>
+                        {!permissions.canModerate && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Shop and listing controls require marketplace moderation access.</p>}
                         {shop ? <>
                             <div className="oi-admin__shop-control">
                                 <div><b>{shop.shop}</b><span>{shop.location} · {shop.verified ? "Verified" : "Unverified"} · {shop.published ? "Published" : "Unpublished"}</span></div>
                                 <div className="oi-admin__shop-actions">
-                                    {shop.published && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => void saveShop({ ...shop, published: false })}>Unpublish</button>}
-                                    <label>Shop status<select value={shop.shopStatus ?? "Active"} onChange={event => void saveShop({ ...shop, shopStatus: event.target.value as AdminShop["shopStatus"] })}><option>Active</option><option>Paused</option></select></label>
+                                    {shop.published && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={!permissions.canModerate} onClick={() => void saveShop({ ...shop, published: false })}>Unpublish</button>}
+                                    <label>Shop status<select value={shop.shopStatus ?? "Active"} disabled={!permissions.canModerate} onChange={event => void saveShop({ ...shop, shopStatus: event.target.value as AdminShop["shopStatus"] })}><option>Active</option><option>Paused</option></select></label>
                                 </div>
                             </div>
                             <div className="oi-admin__table-wrap">
@@ -505,7 +934,7 @@ export function AdminDashboard() {
                                         <td><div className="oi-admin__product-cell">{item.imageUrl && <img src={item.imageUrl} alt="" onError={event => { event.currentTarget.hidden = true; }} />}<div><b>{item.name}</b><small>{item.size}{item.category ? ` · ${item.category}` : ""}</small></div></div></td>
                                         <td>{money(Number(item.price) || 0)}</td>
                                         <td>{item.stock}</td>
-                                        <td><select aria-label={`${item.name} listing status`} value={item.status ?? "Active"} onChange={event => void saveProductStatus(shop, item, event.target.value as NonNullable<AdminProduct["status"]>)}><option>Active</option><option>Draft</option><option>Out of stock</option></select></td>
+                                        <td><select aria-label={`${item.name} listing status`} value={item.status ?? "Active"} disabled={!permissions.canModerate} onChange={event => void saveProductStatus(shop, item, event.target.value as NonNullable<AdminProduct["status"]>)}><option>Active</option><option>Draft</option><option>Out of stock</option></select></td>
                                     </tr>)}
                                 </tbody></table>
                                 {shop.products.length === 0 && <p className="oi-admin__muted">No seller products are registered.</p>}
@@ -562,7 +991,7 @@ export function AdminDashboard() {
                                                             return <select
                                                                 aria-label={`Payment status for ${order.id}`}
                                                                 value={payments[order.id] ?? "Pending"}
-                                                                disabled={busy}
+                                                                disabled={busy || !permissions.canManageFinance}
                                                                 onChange={event => void setPayment(order.id, event.target.value as PaymentState[string])}
                                                             >
                                                                 {["Pending", "Confirmed", "Failed", "Refunded"].map(status => <option key={status}>{status}</option>)}
@@ -589,10 +1018,11 @@ export function AdminDashboard() {
                                     <h2>Payment records</h2>
                                     <p>Transactions are verified server-side. Gateway amounts and statuses must match the order before fulfilment.</p>
                                 </div>
-                                <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" onClick={() => void reconcilePayments()} disabled={reconcileBusy}>
+                                <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" onClick={() => void reconcilePayments()} disabled={reconcileBusy || !permissions.canManageFinance}>
                                     <Icon name="shield" size={15} /> {reconcileBusy ? "Reconciling…" : "Reconcile with Paystack"}
                                 </button>
                             </div>
+                            {!permissions.canManageFinance && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Verification and reconciliation require financial authorization. Payment records remain read-only for this account.</p>}
 
                             {reconciliation && (
                                 <div className="oi-reconciliation">
@@ -640,7 +1070,7 @@ export function AdminDashboard() {
                                                     <td>{payment.verifiedAt ? new Date(payment.verifiedAt).toLocaleString() : "—"}</td>
                                                     <td>
                                                         {payment.provider === "PAYSTACK" && payment.status !== "SUCCESS" && payment.status !== "REFUNDED" ? (
-                                                            <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" disabled={orderBusy === payment.reference} onClick={() => void verifyPaymentRecord(payment.reference)}>
+                                                            <button type="button" className="oi-btn oi-btn--outline oi-btn--sm" disabled={orderBusy === payment.reference || !permissions.canManageFinance} onClick={() => void verifyPaymentRecord(payment.reference)}>
                                                                 {orderBusy === payment.reference ? "Checking…" : "Verify"}
                                                             </button>
                                                         ) : <span className="oi-admin__muted">—</span>}
@@ -680,7 +1110,8 @@ export function AdminDashboard() {
 
                 {tab === "finance" && <>
                     <section className="oi-admin__panel">
-                        <div className="oi-admin__panel-heading"><div><h2>Platform finance</h2><p>Live figures from order lines, payments, payouts and settlements.</p></div><label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label></div>
+                        <div className="oi-admin__panel-heading"><div><h2>Platform finance</h2><p>Live figures from order lines, payments, payouts and settlements.</p></div><label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" disabled={!permissions.canManageFinance} value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label></div>
+                        {!permissions.canManageFinance && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Financial actions are disabled for this account. Figures remain visible, but rates, payouts and settlements are read-only.</p>}
                         <div className="oi-admin__metrics oi-admin__metrics--finance">
                             <article><span>Gross sales</span><strong>{money(financeReport?.totals.grossSales ?? 0)}</strong></article>
                             <article><span>Commission</span><strong>{money(financeReport?.totals.commission ?? 0)}</strong></article>
@@ -709,12 +1140,12 @@ export function AdminDashboard() {
                                     <td className="oi-seller-table__right"><div className="oi-admin__row-actions">
                                         <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => void openPayout(payout.id)}>Details</button>
                                         {payout.status === "REQUESTED" && <>
-                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "approve-payout")}>Approve</button>
-                                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "reject-payout")}>Reject</button>
+                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={financeBusy === payout.id || !permissions.canManageFinance} onClick={() => void processPayout(payout.id, "approve-payout")}>Approve</button>
+                                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={financeBusy === payout.id || !permissions.canManageFinance} onClick={() => void processPayout(payout.id, "reject-payout")}>Reject</button>
                                         </>}
                                         {(payout.status === "APPROVED" || payout.status === "PROCESSING") && <>
-                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "mark-payout-paid")}>Mark paid</button>
-                                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "fail-payout")}>Fail</button>
+                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={financeBusy === payout.id || !permissions.canManageFinance} onClick={() => void processPayout(payout.id, "mark-payout-paid")}>Mark paid</button>
+                                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={financeBusy === payout.id || !permissions.canManageFinance} onClick={() => void processPayout(payout.id, "fail-payout")}>Fail</button>
                                         </>}
                                     </div></td>
                                 </tr>
@@ -725,10 +1156,10 @@ export function AdminDashboard() {
                     <section className="oi-admin__panel">
                         <div className="oi-admin__panel-heading"><div><h2>Settlement history</h2><p>Sale payouts and admin adjustments. Subscription charges are excluded.</p></div></div>
                         <form className="oi-admin__inline-form" onSubmit={event => void recordAdjustment(event)}>
-                            <label>Shop<select value={adjustment.shopId} onChange={event => setAdjustment({ ...adjustment, shopId: event.target.value })}><option value="">Select a shop</option>{shops.map(item => <option key={item.id} value={item.id}>{item.shop}</option>)}</select></label>
-                            <label>Amount (₦)<input type="number" min="1" step="0.01" value={adjustment.amount} onChange={event => setAdjustment({ ...adjustment, amount: event.target.value })} /></label>
-                            <label>Unique reference<input type="text" value={adjustment.reference} onChange={event => setAdjustment({ ...adjustment, reference: event.target.value })} placeholder="ADJ-2026-001" /></label>
-                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={financeBusy === "adjustment"}>Record adjustment</button>
+                            <label>Shop<select value={adjustment.shopId} disabled={!permissions.canManageFinance} onChange={event => setAdjustment({ ...adjustment, shopId: event.target.value })}><option value="">Select a shop</option>{shops.map(item => <option key={item.id} value={item.id}>{item.shop}</option>)}</select></label>
+                            <label>Amount (₦)<input type="number" min="1" step="0.01" disabled={!permissions.canManageFinance} value={adjustment.amount} onChange={event => setAdjustment({ ...adjustment, amount: event.target.value })} /></label>
+                            <label>Unique reference<input type="text" disabled={!permissions.canManageFinance} value={adjustment.reference} onChange={event => setAdjustment({ ...adjustment, reference: event.target.value })} placeholder="ADJ-2026-001" /></label>
+                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={financeBusy === "adjustment" || !permissions.canManageFinance}>Record adjustment</button>
                         </form>
                         {settlementRecords.length ? (
                             <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Reference</th><th>Seller</th><th>Kind</th><th>Date</th><th>Status</th><th className="oi-seller-table__right">Amount</th></tr></thead><tbody>{settlementRecords.map(record => (
@@ -745,7 +1176,111 @@ export function AdminDashboard() {
                     </section>
                 </>}
 
-                {tab === "subscriptions" && <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Subscription management</h2><p>Subscription billing is not connected; changes here are local status records.</p></div></div>{shops.length ? shops.map(item => <div className="oi-admin__shop-control" key={item.slug}><div><b>{item.shop}</b><span>Plan: {item.plan ?? "Free"}</span></div><label>Subscription status<select value={item.subscriptionStatus ?? "Active"} onChange={event => saveShop({ ...item, subscriptionStatus: event.target.value as AdminShop["subscriptionStatus"] })}><option>Active</option><option>Paused</option><option>Cancelled</option></select></label></div>) : <p className="oi-admin__muted">No subscriptions are registered.</p>}<div className="oi-admin__plan-note"><Icon name="shield" size={17} /><span>Plan pricing, recurring charges and invoices need a billing provider before they can be administered here.</span></div></section>}
+                {tab === "subscriptions" && <section className="oi-admin__panel">
+                    <div className="oi-admin__panel-heading"><div><h2>Subscription overview</h2><p>Plan and status values are read from backend shop records.</p></div></div>
+                    {!permissions.canModerate && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Subscription status changes require marketplace moderation access.</p>}
+                    {shops.length ? shops.map(item => {
+                        const shopId = item.id ?? item.slug;
+                        return <div className="oi-admin__shop-control" key={item.slug}><div><b>{item.shop}</b><span>Plan: {item.plan ?? "Free"} · Status: {item.subscriptionStatus ?? "Active"}</span></div><label>Subscription status<select
+                            aria-label={`Subscription status for ${item.shop}`}
+                            value={item.subscriptionStatus ?? "Active"}
+                            disabled={!permissions.canModerate || Boolean(subscriptionBusy)}
+                            aria-busy={subscriptionBusy === shopId}
+                            onChange={event => void setSubscriptionStatus(item, event.target.value as SubscriptionStatus)}
+                        ><option>Active</option><option>Paused</option><option>Cancelled</option></select></label></div>;
+                    }) : <p className="oi-admin__muted">No subscriptions are registered.</p>}
+                    <div className="oi-admin__plan-note"><Icon name="shield" size={17} /><span>Plan pricing and recurring invoices are not configured here. The plan and status shown are backend-managed shop metadata.</span></div>
+                </section>}
+
+                {tab === "reviews" && permissions.canModerate && <>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Review moderation</h2><p>Pending reviews stay off public pages until approved. Hidden reviews are retained for audit.</p></div><span className="oi-admin__muted">{reviewPagination.total} matching</span></div>
+                        <div className="oi-admin__filters">
+                            <label>Status<select value={reviewFilter} onChange={event => { setReviewFilter(event.target.value as "ALL" | ReviewStatus); setReviewPage(1); }}><option value="PENDING">Pending</option><option value="VISIBLE">Visible</option><option value="HIDDEN">Hidden</option><option value="ALL">All</option></select></label>
+                            <div className="oi-admin__pagination">
+                                <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={reviewPagination.page <= 1} onClick={() => setReviewPage(page => Math.max(1, page - 1))}>Previous</button>
+                                <span>Page {reviewPagination.page} of {Math.max(1, reviewPagination.pages)}</span>
+                                <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={reviewPagination.page >= reviewPagination.pages} onClick={() => setReviewPage(page => page + 1)}>Next</button>
+                            </div>
+                        </div>
+                        {reviews.length ? <div className="oi-admin__review-list">{reviews.map(review => <article className="oi-admin__review-card" key={review.id}>
+                            <div className="oi-admin__review-head">
+                                <div><b>{review.authorName}</b><span>{review.targetType} · {review.targetName}</span></div>
+                                <span className={`oi-admin__badge${review.status === "VISIBLE" ? " is-approved" : review.status === "HIDDEN" ? " is-rejected" : " is-pending"}`}>{review.status.toLowerCase()}</span>
+                            </div>
+                            <div className="oi-admin__review-meta"><span>{"★".repeat(review.rating)}{"☆".repeat(Math.max(0, 5 - review.rating))}</span><span>{new Date(review.createdAt).toLocaleString()}</span></div>
+                            <p className="oi-admin__review-text">{review.text}</p>
+                            {review.moderationNote && <p className="oi-admin__muted">Moderator note: {review.moderationNote}</p>}
+                            <div className="oi-admin__review-actions">
+                                <input className="oi-admin__decision-note" aria-label={`Moderation note for review by ${review.authorName}`} value={reviewNotes[review.id] ?? ""} disabled={Boolean(phase9Busy)} placeholder="Optional moderation note" onChange={event => setReviewNotes(current => ({ ...current, [review.id]: event.target.value }))} />
+                                <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={phase9Busy === `review-${review.id}`} onClick={() => void moderateReview(review, "VISIBLE")}>Publish</button>
+                                <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={phase9Busy === `review-${review.id}`} onClick={() => void moderateReview(review, "PENDING")}>Hold</button>
+                                <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={phase9Busy === `review-${review.id}`} onClick={() => void moderateReview(review, "HIDDEN")}>Hide</button>
+                                <button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={phase9Busy === `review-${review.id}`} onClick={() => void removeReview(review)}>Delete</button>
+                            </div>
+                        </article>)}</div> : <p className="oi-admin__muted">No reviews match this filter.</p>}
+                    </section>
+                </>}
+
+                {tab === "settings" && <section className="oi-admin__panel">
+                    <div className="oi-admin__panel-heading"><div><h2>Platform settings</h2><p>Changes take effect immediately in backend behaviour.</p></div></div>
+                    <div className="oi-admin__settings-grid">
+                        <article className="oi-admin__setting-card">
+                            <h3>Commission rate</h3>
+                            <p>Applied to sale settlements and seller finance reports.</p>
+                            <label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" disabled={!permissions.canManageFinance} value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label>
+                            <p className="oi-admin__muted">{permissions.canManageFinance ? "Financial access is enabled for this account." : "Financial access is required to change this value."}</p>
+                        </article>
+                        <article className="oi-admin__setting-card">
+                            <h3>Review moderation</h3>
+                            <p>When enabled, new customer reviews are held as pending until approved.</p>
+                            <label className="oi-check"><input type="checkbox" checked={settings?.reviewModeration ?? false} disabled={!settings || !permissions.canModerate || phase9Busy === "review-setting"} onChange={event => void updateReviewSetting(event.target.checked)} /><span>Require approval for new reviews</span></label>
+                            <p className="oi-admin__muted">Current behaviour: new reviews are {settings?.reviewModeration ? "held for moderation" : "published immediately"}.</p>
+                        </article>
+                    </div>
+                </section>}
+
+                {tab === "audit" && permissions.canViewAudit && <section className="oi-admin__panel">
+                    <div className="oi-admin__panel-heading"><div><h2>Administrative audit log</h2><p>Append-only history of administrative mutations and decisions.</p></div><span className="oi-admin__muted">{auditPagination.total} entries</span></div>
+                    <form className="oi-admin__filters" onSubmit={event => { event.preventDefault(); setAuditPage(1); setAuditSearch(auditSearchInput.trim()); }}>
+                        <label>Search<input value={auditSearchInput} placeholder="Action or summary" onChange={event => setAuditSearchInput(event.target.value)} /></label>
+                        <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit">Apply</button>
+                        {auditSearch && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => { setAuditSearch(""); setAuditSearchInput(""); setAuditPage(1); }}>Clear</button>}
+                    </form>
+                    {auditItems.length ? <div className="oi-admin__table-wrap"><table className="oi-admin__table">
+                        <thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Target</th><th>Summary</th></tr></thead>
+                        <tbody>{auditItems.map(item => <tr key={item.id}>
+                            <td>{new Date(item.createdAt).toLocaleString()}</td>
+                            <td><b>{item.action.replaceAll("_", " ").toLowerCase()}</b></td>
+                            <td>{item.actorName}<small>{item.actorRole.toLowerCase()}</small></td>
+                            <td>{item.targetType.toLowerCase()}{item.targetId ? <small>{item.targetId}</small> : null}{item.metadata ? <small>{JSON.stringify(item.metadata)}</small> : null}</td>
+                            <td>{item.summary}</td>
+                        </tr>)}</tbody>
+                    </table></div> : <p className="oi-admin__muted">No audit entries match this search.</p>}
+                    <div className="oi-admin__pagination">
+                        <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={auditPage <= 1} onClick={() => setAuditPage(page => Math.max(1, page - 1))}>Previous</button>
+                        <span>Page {auditPagination.page} of {Math.max(1, auditPagination.pages)}</span>
+                        <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={auditPage >= auditPagination.pages} onClick={() => setAuditPage(page => page + 1)}>Next</button>
+                    </div>
+                </section>}
+
+                {tab === "permissions" && permissions.canManageUsers && <section className="oi-admin__panel">
+                    <div className="oi-admin__panel-heading"><div><h2>Administrative permissions</h2><p>All administrators can manage users, moderation and audit by default. Financial access is opt-in.</p></div></div>
+                    {users.filter(item => item.role === "ADMIN").length ? users.filter(item => item.role === "ADMIN").map(admin => {
+                        const view: AdminPermissions = admin.id === user?.id ? permissions : userPermissions[admin.id] ?? { canManageFinance: false, canManageUsers: false, canModerate: false, canViewAudit: false };
+                        return <article className="oi-admin__permission-card" key={admin.id}>
+                            <div className="oi-admin__permission-head">
+                                <div><b>{admin.name}</b><span>{admin.email}</span></div>
+                                {admin.id === user?.id && <span className="oi-admin__badge is-approved">This account</span>}
+                            </div>
+                            <div className="oi-admin__permission-list">{permissionLabels.map(permission => <label className="oi-check" key={permission.key}>
+                                <input type="checkbox" checked={view[permission.key]} disabled={Boolean(phase9Busy) || phase9Busy === `permission-${admin.id}-${permission.key}`} onChange={event => void updateUserPermission(admin.id, permission.key, event.target.checked)} />
+                                <span><b>{permission.label}</b><small>{permission.detail}</small></span>
+                            </label>)}</div>
+                            <div className="oi-admin__permission-actions"><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={Boolean(phase9Busy) || phase9Busy === `sessions-${admin.id}`} onClick={() => void revokeSessions(admin.id)}>{phase9Busy === `sessions-${admin.id}` ? "Revoking…" : "Revoke active sessions"}</button></div>
+                        </article>;
+                    }) : <p className="oi-admin__muted">No administrator accounts are available.</p>}
+                </section>}
             </div>
         </div>
     </section>;

@@ -35,6 +35,10 @@ const checks = [
   {
     path: "/reviews/stats",
     validate: payload => payload?.success === true && payload?.data?.products && payload?.data?.shops
+  },
+  {
+    path: "/reviews?targetType=PRODUCT&limit=1",
+    validate: payload => payload?.success === true && (Array.isArray(payload?.data?.items) || Array.isArray(payload?.data))
   }
 ];
 
@@ -55,6 +59,29 @@ for (const check of checks) {
     failed = true;
   }
 }
+
+// Optional: the OpenAPI document may be served at the API root or the app root.
+// A missing spec is not a failure — only public data endpoints are required.
+async function checkOpenApiSpec() {
+  const candidates = [...new Set([baseUrl, baseUrl.replace(/\/api\/v1$/, "")])];
+  for (const origin of candidates) {
+    try {
+      const response = await fetch(`${origin}/openapi.json`, { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) continue;
+      const body = await response.json().catch(() => null);
+      // The API serves its contract inside the standard success envelope.
+      const spec = body?.data ?? body;
+      if (spec && (spec.openapi || spec.swagger) && spec.info) {
+        console.log("✓ /openapi.json (optional spec available)");
+        return;
+      }
+    } catch {
+      // Try the next root; the spec is optional.
+    }
+  }
+  console.log("- /openapi.json (optional spec not reachable; skipped)");
+}
+await checkOpenApiSpec();
 
 if (failed) {
   console.error("Frontend API verification failed.");

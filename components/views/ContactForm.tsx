@@ -2,6 +2,7 @@
 
 import { type FormEvent, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { mutateBackendData } from "@/lib/backend-client";
 
 type Status = "idle" | "sending" | "sent" | "error";
 
@@ -16,6 +17,7 @@ const subjects = [
 
 export function ContactForm() {
     const [status, setStatus] = useState<Status>("idle");
+    const [errorMessage, setErrorMessage] = useState("");
     const [values, setValues] = useState({
         name: "",
         email: "",
@@ -27,6 +29,7 @@ export function ContactForm() {
     function update(field: keyof typeof values, value: string) {
         setValues((v) => ({ ...v, [field]: value }));
         setErrors((e) => ({ ...e, [field]: undefined }));
+        if (status === "error") setStatus("idle");
     }
 
     function validate() {
@@ -40,16 +43,28 @@ export function ContactForm() {
         return next;
     }
 
-    function handleSubmit(e: FormEvent) {
+    async function handleSubmit(e: FormEvent) {
         e.preventDefault();
+        if (status === "sending") return;
         const errs = validate();
         if (Object.keys(errs).length) { setErrors(errs); return; }
         setStatus("sending");
-        // Simulate network delay — replace with a real API call when ready
-        window.setTimeout(() => {
+        setErrorMessage("");
+        try {
+            await mutateBackendData("send-contact", {
+                name: values.name.trim(),
+                email: values.email.trim(),
+                subject: values.subject,
+                message: values.message.trim()
+            });
             setStatus("sent");
             setValues({ name: "", email: "", subject: "", message: "" });
-        }, 1200);
+        } catch (submitError) {
+            setErrorMessage(submitError instanceof Error && submitError.message
+                ? submitError.message
+                : "Something went wrong. Please try again or email us directly.");
+            setStatus("error");
+        }
     }
 
     if (status === "sent") {
@@ -65,7 +80,7 @@ export function ContactForm() {
                 <button
                     type="button"
                     className="oi-btn oi-btn--outline oi-btn--sm"
-                    onClick={() => setStatus("idle")}
+                    onClick={() => { setErrorMessage(""); setStatus("idle"); }}
                 >
                     Send another message
                 </button>
@@ -151,7 +166,7 @@ export function ContactForm() {
 
             {status === "error" && (
                 <p className="oi-auth__error" role="alert">
-                    Something went wrong. Please try again or email us directly.
+                    {errorMessage || "Something went wrong. Please try again or email us directly."}
                 </p>
             )}
 

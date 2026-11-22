@@ -59,16 +59,21 @@ function queryOf(params: Record<string, string>) {
 export async function readBackendData<T>(view: string, params: Record<string, string> = {}): Promise<T> {
     let result: unknown;
     if (view === "marketplace") {
-        const [products, shops, categories] = await Promise.all([
+        const [productRows, shopRows, categoryRows] = await Promise.all([
             apiFetch<{ items: Record<string, unknown>[] }>("/products?limit=100"),
             apiFetch<Record<string, unknown>[]>("/shops"),
             apiFetch<Record<string, unknown>[]>("/products/categories")
         ]);
+        const products = productRows.items.map(mapProduct);
         result = {
-            products: products.items.map(mapProduct),
-            shops: shops.map(row => mapShop(row)),
-            categories: categories.length ? categories.map(mapCategory) : defaultCategories
+            products,
+            // Attach the mapped listings so mapShop can derive shop categories and
+            // specialties consistently with the rest of the compatibility layer.
+            shops: shopRows.map(row => mapShop({ ...row, products: products.filter(product => product.shopSlug === row.slug) })),
+            categories: categoryRows.length ? categoryRows.map(mapCategory) : defaultCategories
         };
+    } else if (view === "product-media") {
+        result = await apiFetch(`/products/${encodeURIComponent(params.id ?? "")}/media`);
     } else if (view === "product") {
         try { const row = await apiFetch<Record<string, unknown>>(`/products/${encodeURIComponent(params.slug ?? "")}`); result = { product: mapProduct(row), shop: mapShop(row.shop as Record<string, unknown>) }; }
         catch (error) { if (error instanceof Error && "status" in error && error.status === 404) result = { product: null, shop: null }; else throw error; }
@@ -117,6 +122,22 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         result = { reviews: (await apiFetch<Record<string, unknown>[]>(`/reviews?${query}`)).map(mapReview) };
     } else if (view === "rating-stats") {
         result = await apiFetch("/reviews/stats");
+    } else if (view === "admin-dashboard") {
+        result = await apiFetch("/admin/dashboard");
+    } else if (view === "admin-permissions") {
+        result = await apiFetch("/admin/permissions");
+    } else if (view === "admin-audit-logs") {
+        result = await apiFetch(`/admin/audit-logs${queryOf(params)}`);
+    } else if (view === "admin-settings") {
+        result = await apiFetch("/admin/settings");
+    } else if (view === "admin-reviews") {
+        result = await apiFetch(`/admin/reviews${queryOf(params)}`);
+    } else if (view === "admin-pending-shops") {
+        result = await apiFetch("/admin/shops/pending");
+    } else if (view === "admin-moderation-products") {
+        result = await apiFetch(`/admin/products/moderation${queryOf(params)}`);
+    } else if (view === "admin-user-permissions") {
+        result = await apiFetch(`/admin/users/${encodeURIComponent(params.id ?? "")}/permissions`);
     } else if (view === "admin-payouts") {
         result = await apiFetch(`/admin/payouts${queryOf(params)}`);
     } else if (view === "admin-payout-detail") {
@@ -133,7 +154,11 @@ export async function readBackendData<T>(view: string, params: Record<string, st
             categories: (data.categories ?? []).map(mapCategory),
             orders: data.orders.map(mapOrder),
             paymentRecords: (data.paymentRecords ?? []).map(mapPaymentRecord),
-            refundRecords: (data.refundRecords ?? []).map(mapRefundRecord)
+            refundRecords: (data.refundRecords ?? []).map(mapRefundRecord),
+            settlements: (data.settlements ?? []).map((settlement: Record<string, any>) => ({
+                ...settlement,
+                status: settlement.status === "Recorded locally" ? "Recorded" : settlement.status
+            }))
         };
     } else {
         throw new Error(`Unsupported backend data view: ${view}`);
@@ -142,6 +167,14 @@ export async function readBackendData<T>(view: string, params: Record<string, st
 }
 
 export async function mutateBackendData<T = { ok: boolean }>(action: string, payload: Record<string, unknown>): Promise<T> {
+    /** Public contact form delivery. The backend persists the enquiry and returns the saved record. */
+    if (action === "send-contact") {
+        const { name, email, subject, message } = payload as { name: string; email: string; subject: string; message: string };
+        return await apiFetch<T>("/contact", {
+            method: "POST",
+            body: JSON.stringify({ name, email, subject, message })
+        });
+    }
     if (action === "create-shop") {
         const shop = payload.shop as Record<string, any>;
         return await apiFetch<T>("/shops", {
@@ -207,6 +240,45 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
         return await apiFetch<T>(`/products/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(toBackendProductPayload(product)) });
     }
     if (action === "delete-product") return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.id))}`, { method: "DELETE" });
+
+    /* Product gallery media. These actions use the dedicated media endpoints so
+       sellers can persist a gallery independently of the legacy inline media array.
+       Payload shape: { productId, [mediaId], [media | url | alt | isPrimary] }. */
+    if (action === "list-product-media") {
+        return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.productId))}/media`);
+    }
+    if (action === "add-product-media") {
+        const media = (payload.media ?? { url: payload.url, alt: payload.alt, isPrimary: payload.isPrimary }) as Record<string, unknown>;
+        return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.productId))}/media`, {
+            method: "POST",
+            body: JSON.stringify({
+                url: String(media.url ?? ""),
+                ...(media.alt !== undefined ? { alt: media.alt } : {}),
+                ...(media.isPrimary !== undefined ? { isPrimary: Boolean(media.isPrimary) } : {})
+            })
+        });
+    }
+    if (action === "update-product-media") {
+        const changes = (payload.media ?? payload.patch ?? {}) as Record<string, unknown>;
+        return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.productId))}/media/${encodeURIComponent(String(payload.mediaId))}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+                ...(changes.url !== undefined ? { url: String(changes.url) } : {}),
+                ...(changes.alt !== undefined ? { alt: changes.alt } : {}),
+                ...(changes.isPrimary !== undefined ? { isPrimary: Boolean(changes.isPrimary) } : {})
+            })
+        });
+    }
+    if (action === "remove-product-media") {
+        return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.productId))}/media/${encodeURIComponent(String(payload.mediaId))}`, { method: "DELETE" });
+    }
+    if (action === "set-primary-product-media") {
+        return await apiFetch<T>(`/products/${encodeURIComponent(String(payload.productId))}/media/${encodeURIComponent(String(payload.mediaId))}`, {
+            method: "PATCH",
+            body: JSON.stringify({ isPrimary: true })
+        });
+    }
+
     if (action === "delete-shop") return await apiFetch<T>("/shops/mine", { method: "DELETE" });
     if (action === "update-order") {
         const { orderId, status, note } = payload as { orderId: string; status: string; note?: string };
@@ -237,7 +309,8 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
             body: JSON.stringify({
                 verified: Boolean(shop.verified),
                 published: Boolean(shop.published),
-                status: String(shopStatus).toLowerCase() === "paused" ? "Paused" : "Active"
+                status: String(shopStatus).toLowerCase() === "paused" ? "Paused" : "Active",
+                ...(shop.decisionNote ? { note: String(shop.decisionNote) } : {})
             })
         });
     }
@@ -250,6 +323,15 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
                 ...(product.price !== undefined ? { price: Number(product.price) } : {}),
                 ...(product.stock !== undefined ? { stock: Number(product.stock) } : {})
             })
+        });
+    }
+    /** Moderator-only: update a shop's subscription lifecycle state. */
+    if (action === "admin-set-subscription-status") {
+        const status = String(payload.status);
+        if (!["Active", "Paused", "Cancelled"].includes(status)) throw new Error(`Unsupported subscription status: ${status}`);
+        return await apiFetch<T>(`/admin/subscriptions/${encodeURIComponent(String(payload.shopId))}/status`, {
+            method: "PATCH",
+            body: JSON.stringify({ status })
         });
     }
     if (action === "upsert-category") {
@@ -298,6 +380,48 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
     if (action === "set-settings") {
         const settings = payload.settings as { commissionRate: number };
         return await apiFetch<T>("/admin/settings/commission", { method: "PUT", body: JSON.stringify({ rate: settings.commissionRate }) });
+    }
+    if (action === "admin-approve-shop") {
+        return await apiFetch<T>(`/admin/shops/${encodeURIComponent(String(payload.id))}/approve`, {
+            method: "POST",
+            body: JSON.stringify(payload.note ? { note: String(payload.note) } : {})
+        });
+    }
+    if (action === "admin-reject-shop") {
+        return await apiFetch<T>(`/admin/shops/${encodeURIComponent(String(payload.id))}/reject`, {
+            method: "POST",
+            body: JSON.stringify({ reason: String(payload.reason ?? "").trim() })
+        });
+    }
+    if (action === "admin-moderate-product") {
+        return await apiFetch<T>(`/admin/products/${encodeURIComponent(String(payload.id))}/moderate`, {
+            method: "POST",
+            body: JSON.stringify({ status: String(payload.status), ...(payload.note ? { note: String(payload.note) } : {}) })
+        });
+    }
+    if (action === "admin-moderate-review") {
+        return await apiFetch<T>(`/admin/reviews/${encodeURIComponent(String(payload.id))}/moderate`, {
+            method: "POST",
+            body: JSON.stringify({ status: String(payload.status), ...(payload.note ? { note: String(payload.note) } : {}) })
+        });
+    }
+    if (action === "admin-delete-review") {
+        return await apiFetch<T>(`/admin/reviews/${encodeURIComponent(String(payload.id))}`, { method: "DELETE" });
+    }
+    if (action === "admin-set-review-moderation") {
+        return await apiFetch<T>("/admin/settings/review-moderation", {
+            method: "PUT",
+            body: JSON.stringify({ enabled: Boolean(payload.enabled) })
+        });
+    }
+    if (action === "admin-update-user-permissions") {
+        return await apiFetch<T>(`/admin/users/${encodeURIComponent(String(payload.id))}/permissions`, {
+            method: "PATCH",
+            body: JSON.stringify(payload.permissions)
+        });
+    }
+    if (action === "admin-revoke-sessions") {
+        return await apiFetch<T>(`/admin/users/${encodeURIComponent(String(payload.id))}/revoke-sessions`, { method: "POST" });
     }
     if (action === "create-settlement") {
         const settlement = payload.settlement as { sellerId: string; shopId?: string; amount: number; reference: string };

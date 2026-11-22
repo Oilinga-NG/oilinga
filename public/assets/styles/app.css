@@ -5285,6 +5285,190 @@
     margin-bottom: var(--space-4);
 }
 
+.oi-admin__read-only {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 12px 14px;
+    border: 1px solid #e2aca5;
+    border-radius: var(--radius-md);
+    background: #fff7f5;
+    color: #7c2c24;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+}
+
+.oi-admin__read-only svg {
+    flex: none;
+    margin-top: 2px;
+}
+
+.oi-admin__badge.is-pending {
+    background: var(--gold-50);
+    color: #8a6200;
+}
+
+.oi-admin__badge.is-rejected {
+    background: #ffe7e3;
+    color: #8e3126;
+}
+
+.oi-admin__seller-actions,
+.oi-admin__review-actions,
+.oi-admin__permission-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.oi-admin__decision-note {
+    min-width: 190px;
+    min-height: 38px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font: inherit;
+}
+
+.oi-admin__filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.oi-admin__filters label {
+    display: grid;
+    gap: 5px;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+}
+
+.oi-admin__filters input,
+.oi-admin__filters select {
+    min-height: 38px;
+    padding: 6px 9px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font: inherit;
+}
+
+.oi-admin__pagination {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+}
+
+.oi-admin__review-list,
+.oi-admin__settings-grid {
+    display: grid;
+    gap: var(--space-3);
+}
+
+.oi-admin__settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.oi-admin__review-card,
+.oi-admin__setting-card,
+.oi-admin__permission-card {
+    display: grid;
+    gap: 12px;
+    padding: var(--space-4);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+}
+
+.oi-admin__review-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.oi-admin__review-head>div,
+.oi-admin__permission-head>div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.oi-admin__review-head span,
+.oi-admin__permission-head span {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+}
+
+.oi-admin__review-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+}
+
+.oi-admin__review-meta span:first-child {
+    color: var(--gold-600, var(--color-primary));
+    letter-spacing: 1px;
+}
+
+.oi-admin__review-text {
+    margin: 0;
+    line-height: 1.6;
+}
+
+.oi-admin__setting-card h3,
+.oi-admin__setting-card p {
+    margin: 0;
+}
+
+.oi-admin__setting-card p {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+}
+
+.oi-admin__setting-card .oi-admin__rate {
+    max-width: 180px;
+}
+
+.oi-admin__permission-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.oi-admin__permission-list {
+    display: grid;
+    gap: 12px;
+}
+
+.oi-admin__permission-list .oi-check {
+    align-items: flex-start;
+}
+
+.oi-admin__permission-list .oi-check span {
+    display: grid;
+    gap: 2px;
+}
+
+.oi-admin__permission-list .oi-check small {
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+}
+
 @media (max-width: 760px) {
     .oi-admin__metrics {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5310,6 +5494,26 @@
     .oi-admin__seller-card>.oi-btn {
         grid-column: 2;
         justify-self: start;
+    }
+
+    .oi-admin__seller-card>.oi-admin__seller-actions {
+        grid-column: 2;
+        justify-content: flex-start;
+        width: 100%;
+    }
+
+    .oi-admin__decision-note {
+        width: 100%;
+    }
+
+    .oi-admin__settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .oi-admin__filters,
+    .oi-admin__pagination {
+        align-items: flex-start;
+        flex-direction: column;
     }
 }
 

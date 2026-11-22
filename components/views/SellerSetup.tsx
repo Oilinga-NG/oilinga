@@ -7,6 +7,8 @@ import { Logo } from "@/components/brand/Logo";
 import { Icon } from "@/components/ui/Icon";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { readBackendData, slugifyShopName, mutateBackendData } from "@/lib/backend-client";
+import { normalizePlanId, normalizeSubscriptionStatus } from "@/lib/backend-mappers";
+import { apiFetch } from "@/lib/api-client";
 import type { Category, ProductCategory, ProductMedia } from "@/lib/data";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
@@ -177,7 +179,9 @@ type ShopSetup = {
     description?: string;
     products: Listing[];
     orders: SellerOrder[];
-    plan: "Free";
+    /** Canonical plan id (starter/growth/pro) from the backend shop or subscription record. */
+    plan: string;
+    subscriptionStatus: "Active" | "Paused" | "Cancelled";
     published: boolean;
     verified?: boolean;
     verificationRequestedAt?: string | null;
@@ -193,8 +197,17 @@ function mediaToText(media?: ProductMedia[]) {
     return (media ?? []).map(item => item.url).join("\n");
 }
 
-function textToMedia(value: string): ProductMedia[] {
-    return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(url => ({ url }));
+function textToMedia(value: string, existing: ProductMedia[] = []): ProductMedia[] {
+    const seen = new Set<string>();
+    return value.split(/\r?\n/).map(line => line.trim()).filter(url => {
+        if (!url || seen.has(url)) return false;
+        seen.add(url);
+        return true;
+    }).map(url => {
+        // Keep backend media ids/flags when the URL still matches an existing row.
+        const previous = existing.find(item => item.url === url);
+        return previous ? { ...previous, url } : { url };
+    });
 }
 
 const ORDER_STATUS_TO_SELLER: Record<string, SellerOrderStatus> = {
@@ -268,7 +281,7 @@ function ProductImageFields({ value, onChange }: {
             <input value={value.imageUrl ?? ""} onChange={event => onChange({ imageUrl: event.target.value })} placeholder="https://… or /assets/…" />
         </label>
         <label className="oi-seller-setup__field">Gallery image URLs
-            <textarea rows={3} value={mediaToText(value.media)} onChange={event => onChange({ media: textToMedia(event.target.value) })} placeholder="One URL per line" />
+            <textarea rows={3} value={mediaToText(value.media)} onChange={event => onChange({ media: textToMedia(event.target.value, value.media) })} placeholder="One URL per line" />
         </label>
     </>;
 }
@@ -290,7 +303,7 @@ function ProductEditor({ item, categories, onSave, onDelete, busy = false }: {
     }, [item]);
 
     function save() {
-        onSave({ ...draft, media: textToMedia(mediaText) });
+        onSave({ ...draft, media: textToMedia(mediaText, draft.media) });
     }
 
     return (
@@ -511,6 +524,10 @@ export function SellerSetup() {
         const result = await readBackendData<{ shop: Record<string, any> | null; orders: SellerOrder[] }>("seller");
         const row = result.shop;
         if (!row) { setSetup(null); return null; }
+        // Shop metadata is authoritative; /subscriptions fills in shops whose
+        // plan has not been denormalised onto the shop record yet.
+        let subscription: { plan?: unknown; subscriptionStatus?: unknown; status?: unknown } = {};
+        try { subscription = await apiFetch<typeof subscription>("/subscriptions"); } catch { /* keep shop metadata */ }
         const existing: ShopSetup = {
             id: row.id ? String(row.id) : undefined,
             slug: row.slug,
@@ -531,7 +548,8 @@ export function SellerSetup() {
                 media: item.media ?? []
             })),
             orders: result.orders,
-            plan: "Free",
+            plan: normalizePlanId(subscription.plan ?? row.subscription?.plan ?? row.plan),
+            subscriptionStatus: normalizeSubscriptionStatus(subscription.subscriptionStatus ?? subscription.status ?? row.subscription?.status ?? row.subscriptionStatus),
             published: Boolean(row.published),
             verified: Boolean(row.verified),
             verificationRequestedAt: row.verificationRequestedAt ?? null,
@@ -540,6 +558,31 @@ export function SellerSetup() {
         setSetup(existing);
         await loadWorkspace();
         return existing;
+    }
+
+    /** Persist a gallery through the dedicated media endpoints. The inline media
+        array is still sent with the product for backwards compatibility. */
+    async function persistProductMedia(productId: string, media: ProductMedia[], imageUrl?: string | null) {
+        const desired = media.map(item => item.url.trim()).filter(Boolean);
+        const primaryUrl = desired[0] ?? imageUrl?.trim() ?? "";
+        const response = await mutateBackendData<{ items?: { id?: string; url: string; isPrimary?: boolean }[] } | { id?: string; url: string; isPrimary?: boolean }[]>("list-product-media", { productId });
+        const rows = Array.isArray(response) ? response : response?.items ?? [];
+        const seenUrls = new Set<string>();
+
+        for (const row of rows) {
+            const duplicate = seenUrls.has(row.url);
+            if (!duplicate) seenUrls.add(row.url);
+            if ((!desired.includes(row.url) || duplicate) && row.id) {
+                await mutateBackendData("remove-product-media", { productId, mediaId: row.id });
+            }
+        }
+        for (const url of desired) {
+            if (seenUrls.has(url)) continue;
+            await mutateBackendData("add-product-media", { productId, media: { url, isPrimary: url === primaryUrl } });
+            seenUrls.add(url);
+        }
+        const primaryRow = rows.find(row => row.url === primaryUrl && row.id && !row.isPrimary);
+        if (primaryRow?.id) await mutateBackendData("set-primary-product-media", { productId, mediaId: primaryRow.id });
     }
 
     useEffect(() => {
@@ -603,13 +646,19 @@ export function SellerSetup() {
         setSaving(true);
         try {
             const status: ListingStatus = setup.verified && setup.status !== "Paused" && Number(product.stock) > 0 ? "Active" : "Draft";
-            await mutateBackendData("create-product", {
+            const created = await mutateBackendData<{ id?: string; dbId?: string } | undefined>("create-product", {
                 product: { ...product, name: product.name.trim(), shopId: setup.id, status }
             });
+            const createdId = created?.id ?? created?.dbId;
+            let mediaWarning = "";
+            if (createdId) {
+                try { await persistProductMedia(String(createdId), product.media ?? [], product.imageUrl); }
+                catch (mediaError) { mediaWarning = `Product saved, but the gallery could not be synchronized: ${mediaError instanceof Error ? mediaError.message : "media endpoint unavailable"}`; }
+            }
             await loadSellerData();
             await refreshMarketplace();
             setProduct(blankProduct);
-            setError("");
+            setError(mediaWarning);
             return true;
         } catch (productError) {
             setError(productError instanceof Error ? productError.message : "Could not add this product.");
@@ -657,9 +706,12 @@ export function SellerSetup() {
             if (!current) return;
             const merged = { ...current, ...patch };
             await mutateBackendData("update-product", { id: merged.dbId ?? merged.id, product: { ...merged, shopId: setup.id } });
+            let mediaWarning = "";
+            try { await persistProductMedia(merged.dbId ?? merged.id, merged.media ?? [], merged.imageUrl); }
+            catch (mediaError) { mediaWarning = `Product saved, but the gallery could not be synchronized: ${mediaError instanceof Error ? mediaError.message : "media endpoint unavailable"}`; }
             await loadSellerData();
             await refreshMarketplace();
-            setError("");
+            setError(mediaWarning);
         } catch (productError) {
             setError(productError instanceof Error ? productError.message : "Could not update this product.");
         } finally { setSaving(false); }
@@ -973,7 +1025,7 @@ export function SellerSetup() {
     }
 
     if (stage === "products" && setup) {
-        const currentPlan = getPlan(setup.plan?.toLowerCase() ?? "starter");
+        const currentPlan = getPlan(setup.plan);
         const limit = currentPlan?.listingLimit ?? 5;
         const atLimit = limit !== -1 && setup.products.length >= limit;
         return (
@@ -1039,7 +1091,7 @@ export function SellerSetup() {
         const lowStockItems = inventoryData?.items.filter(item => item.lowStock) ?? [];
         const tabTitle = workspaceTabs.find(tab => tab.id === activeTab)?.label ?? "Overview";
         const shopSlug = setup.slug ?? slugifyShopName(setup.shop);
-        const currentPlan = getPlan(setup.plan?.toLowerCase() ?? "starter");
+        const currentPlan = getPlan(setup.plan);
         const limit = currentPlan?.listingLimit ?? 5;
         const atLimit = limit !== -1 && setup.products.length >= limit;
         return (
@@ -1308,7 +1360,7 @@ export function SellerSetup() {
                                         <Icon name="sparkle" size={18} />
                                         <div>
                                             <strong>You are on the {currentPlan?.name ?? "Starter"} plan</strong>
-                                            <span>{currentPlan?.commission ?? 4}% commission · {limit === -1 ? "Unlimited" : limit} product{limit !== 1 ? "s" : ""}</span>
+                                            <span>{setup.subscriptionStatus} · {currentPlan?.commission ?? 4}% commission · {limit === -1 ? "Unlimited" : limit} product{limit !== 1 ? "s" : ""}</span>
                                         </div>
                                         <Link href="/seller/subscription" className="oi-btn oi-btn--outline oi-btn--sm">Manage subscription</Link>
                                     </div>
