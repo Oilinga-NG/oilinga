@@ -50,6 +50,25 @@ type AdminUser = {
 };
 type PaymentState = Record<string, "Pending" | "Confirmed" | "Failed" | "Refunded">;
 type Settlement = { id: string; amount: number; date: string; status: "Recorded locally" };
+type PayoutStatus = "REQUESTED" | "APPROVED" | "REJECTED" | "PROCESSING" | "PAID" | "FAILED" | "CANCELLED";
+type PayoutEvent = { id: string; fromStatus: PayoutStatus | null; toStatus: PayoutStatus; actorName: string | null; actorRole: string | null; note: string | null; reference: string | null; createdAt: string };
+type Payout = {
+    id: string; sellerId: string; sellerName: string | null; shopId: string; shopName: string | null;
+    amount: number; currency: string; status: PayoutStatus; reference: string; note: string | null;
+    requestedAt: string; reviewedAt: string | null; reviewerName: string | null; reviewNote: string | null;
+    paidAt: string | null; failureReason: string | null; events?: PayoutEvent[];
+};
+type SettlementRecord = {
+    id: string; sellerId: string; shopId: string | null; amount: number; currency: string;
+    status: string; kind: "SALE" | "SUBSCRIPTION" | "ADJUSTMENT"; reference: string | null;
+    payoutId: string | null; createdAt: string;
+};
+type FinanceReport = {
+    currency: string; commissionRate: number; range: { from: string | null; to: string | null };
+    totals: { grossSales: number; totalRefunds: number; commission: number; netEarnings: number; paidOut: number; pendingPayouts: number; availableBalance: number; totalOrders: number };
+    reconciliation: { available: boolean; checked: number; matched: number; mismatches: number; message?: string; totals: { localSuccessfulKobo: number; gatewaySuccessfulKobo: number; successfulCount: number } };
+    bySeller: { sellerId: string; sellerName: string; shops: string; grossSales: number; totalRefunds: number; commission: number; netEarnings: number; paidOut: number; pendingPayouts: number; availableBalance: number; totalOrders: number }[];
+};
 const tabs: { id: Tab; label: string; icon: "grid" | "shield" | "store" | "box" | "receipt" | "lock" | "wallet" | "sparkle" }[] = [
     { id: "overview", label: "Overview", icon: "grid" }, { id: "users", label: "Users & roles", icon: "shield" }, { id: "sellers", label: "Seller verification", icon: "store" },
     { id: "products", label: "Shops & products", icon: "box" }, { id: "orders", label: "Orders", icon: "receipt" },
@@ -83,6 +102,12 @@ export function AdminDashboard() {
     const [reconcileBusy, setReconcileBusy] = useState(false);
     const [settlements, setSettlements] = useState<Settlement[]>([]);
     const [commissionRate, setCommissionRate] = useState("0");
+    const [financeReport, setFinanceReport] = useState<FinanceReport | null>(null);
+    const [payouts, setPayouts] = useState<Payout[]>([]);
+    const [payoutDetail, setPayoutDetail] = useState<Payout | null>(null);
+    const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([]);
+    const [financeBusy, setFinanceBusy] = useState("");
+    const [adjustment, setAdjustment] = useState({ shopId: "", amount: "", reference: "" });
     const [categories, setCategories] = useState<Category[]>([]);
     const [categoryName, setCategoryName] = useState("");
     const [categoryCaption, setCategoryCaption] = useState("");
@@ -111,7 +136,7 @@ export function AdminDashboard() {
         }
         let cancelled = false;
         void readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; paymentRecords: PaymentRecord[]; refundRecords: PaymentRefundRecord[]; settlements: Settlement[]; settings: { commissionRate: number } }>("admin")
-            .then(data => { if (!cancelled) { const records = data.shops.map(record => ({ ...record, shop: record.name, shopStatus: (record.status === "Paused" ? "Paused" : "Active") as AdminShop["shopStatus"] })); setShops(records); setSelectedShopSlug(records[0]?.slug ?? ""); setCategories(data.categories ?? []); setOrders(data.orders); setPayments(data.payments); setPaymentRecords(data.paymentRecords ?? []); setRefundRecords(data.refundRecords ?? []); setSettlements(data.settlements); setCommissionRate(String(data.settings.commissionRate ?? 0)); } })
+            .then(data => { if (!cancelled) { const records = data.shops.map(record => ({ ...record, shop: record.name, shopStatus: (record.status === "Paused" ? "Paused" : "Active") as AdminShop["shopStatus"] })); setShops(records); setSelectedShopSlug(records[0]?.slug ?? ""); setCategories(data.categories ?? []); setOrders(data.orders); setPayments(data.payments); setPaymentRecords(data.paymentRecords ?? []); setRefundRecords(data.refundRecords ?? []); setSettlements(data.settlements); setCommissionRate(String((data.settings.commissionRate ?? 0) * 100)); } })
             .catch(error => console.error("Admin data could not be loaded", error))
             .finally(() => { if (!cancelled) setReady(true); });
         return () => { cancelled = true; };
@@ -233,8 +258,76 @@ export function AdminDashboard() {
     }
 
     function saveCommission(value: string) {
-        setCommissionRate(value); void mutateBackendData("set-settings", { settings: { commissionRate: Number(value) || 0 } }).catch(error => console.error("Commission setting update failed", error));
+        setCommissionRate(value); void mutateBackendData("set-settings", { settings: { commissionRate: Number(value) || 0 } })
+            .then(() => void loadFinance())
+            .catch(error => { setAdminError(error instanceof Error ? error.message : "Could not update the commission rate."); });
     }
+
+    async function loadFinance() {
+        const [report, queue, history] = await Promise.all([
+            readBackendData<FinanceReport>("admin-finance-report"),
+            readBackendData<{ items: Payout[] }>("admin-payouts"),
+            readBackendData<{ items: SettlementRecord[] }>("admin-settlements")
+        ]);
+        setFinanceReport(report);
+        setPayouts(queue.items);
+        setSettlementRecords(history.items);
+        setCommissionRate(String(report.commissionRate * 100));
+    }
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || (tab !== "overview" && tab !== "finance")) return;
+        let cancelled = false;
+        void loadFinance().catch(error => {
+            if (!cancelled) setAdminError(error instanceof Error ? error.message : "Could not load financial records.");
+        });
+        return () => { cancelled = true; };
+    }, [authReady, user, tab]);
+
+    async function openPayout(id: string) {
+        try { setPayoutDetail(await readBackendData<Payout>("admin-payout-detail", { id })); }
+        catch (error) { setAdminError(error instanceof Error ? error.message : "Could not load payout details."); }
+    }
+
+    async function processPayout(id: string, action: "approve-payout" | "reject-payout" | "mark-payout-paid" | "fail-payout") {
+        setFinanceBusy(id);
+        try {
+            const body: Record<string, unknown> = {};
+            if (action === "reject-payout" || action === "fail-payout") {
+                const reason = window.prompt(action === "reject-payout" ? "Reason for rejection" : "Reason for failure", "")?.trim();
+                if (!reason) return;
+                body.reason = reason;
+            }
+            await mutateBackendData(action, { id, body });
+            setAdminError("");
+            setAdminNotice(`Payout ${action.replace("-payout", "").replace("mark-", "marked ")} updated.`);
+            await loadFinance();
+            await openPayout(id);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not update this payout.");
+        } finally { setFinanceBusy(""); }
+    }
+
+    async function recordAdjustment(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const shop = shops.find(item => item.id === adjustment.shopId || item.slug === adjustment.shopId);
+        const amount = Number(adjustment.amount);
+        if (!shop || !Number.isFinite(amount) || amount <= 0 || !adjustment.reference.trim()) {
+            setAdminError("Select a shop, enter a positive amount and provide a unique reference."); return;
+        }
+        setFinanceBusy("adjustment");
+        try {
+            await mutateBackendData("create-settlement", {
+                settlement: { sellerId: shop.id ?? shop.slug, shopId: shop.id ?? shop.slug, amount, reference: adjustment.reference.trim() }
+            });
+            setAdjustment({ shopId: "", amount: "", reference: "" });
+            setAdminError(""); setAdminNotice("Settlement adjustment recorded.");
+            await loadFinance();
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not record this settlement.");
+        } finally { setFinanceBusy(""); }
+    }
+
     async function addCategory(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         const name = categoryName.trim();
@@ -308,11 +401,6 @@ export function AdminDashboard() {
 
     if (!authReady || !ready || !user || user.role !== "admin") return <LoadingState label="Checking administrator access" />;
     const shop = shops.find(item => item.slug === selectedShopSlug) ?? shops[0] ?? null;
-    const deliveredGross = orders.filter(order => order.status === "Delivered").reduce((sum, order) => sum + order.subtotal, 0);
-    const rate = Math.max(0, Number(commissionRate) || 0);
-    const commission = deliveredGross * rate / 100;
-    const settled = settlements.reduce((sum, item) => sum + item.amount, 0);
-    const unsettled = Math.max(0, deliveredGross - commission - settled);
     const title = tabs.find(item => item.id === tab)?.label ?? "Overview";
 
     return <section className="oi-view oi-container oi-admin">
@@ -330,7 +418,7 @@ export function AdminDashboard() {
                 {adminNotice && <p className="oi-admin__muted" role="status">{adminNotice}</p>}
 
                 {tab === "overview" && <>
-                    <div className="oi-admin__metrics"><article><span>Registered shops</span><strong>{shops.length}</strong></article><article><span>Awaiting verification</span><strong>{shops.filter(item => !item.verified).length}</strong></article><article><span>Products</span><strong>{shops.reduce((count, item) => count + item.products.length, 0)}</strong></article><article><span>Orders</span><strong>{orders.length}</strong></article><article><span>Delivered order value</span><strong>{money(deliveredGross)}</strong></article><article><span>Settlement estimate</span><strong>{money(unsettled)}</strong></article></div>
+                    <div className="oi-admin__metrics"><article><span>Registered shops</span><strong>{shops.length}</strong></article><article><span>Awaiting verification</span><strong>{shops.filter(item => !item.verified).length}</strong></article><article><span>Products</span><strong>{shops.reduce((count, item) => count + item.products.length, 0)}</strong></article><article><span>Orders</span><strong>{orders.length}</strong></article><article><span>Gross sales</span><strong>{money(financeReport?.totals.grossSales ?? 0)}</strong></article><article><span>Available balance</span><strong>{money(financeReport?.totals.availableBalance ?? 0)}</strong></article></div>
                     <section className="oi-admin__panel"><h2>Needs attention</h2>{shops.filter(item => !item.verified).length ? shops.filter(item => !item.verified).map(item => <div className="oi-admin__attention" key={item.slug}><div><b>{item.shop}</b><span>{item.owner} · {item.location}</span></div><button className="oi-btn oi-btn--primary oi-btn--sm" type="button" onClick={() => { setSelectedShopSlug(item.slug); setTab("sellers"); }}>Review seller</button></div>) : <p className="oi-admin__muted">No seller verification is pending.</p>}{orders.length === 0 && <p className="oi-admin__muted">There are no local order records yet.</p>}</section>
                 </>}
 
@@ -590,7 +678,72 @@ export function AdminDashboard() {
                     </>
                 )}
 
-                {tab === "finance" && <><section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Commission and settlements</h2><p>Estimate fees from delivered order records.</p></div><label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label></div><div className="oi-admin__metrics oi-admin__metrics--finance"><article><span>Delivered order value</span><strong>{money(deliveredGross)}</strong></article><article><span>Estimated commission</span><strong>{money(commission)}</strong></article><article><span>Estimated seller balance</span><strong>{money(Math.max(0, deliveredGross - commission))}</strong></article><article><span>Unsettled estimate</span><strong>{money(unsettled)}</strong></article></div><button className="oi-btn oi-btn--primary" type="button" disabled={unsettled <= 0} onClick={() => { const settlement = { id: `SET-${Date.now()}`, amount: unsettled, date: new Date().toISOString(), status: "Recorded locally" as const }; setSettlements([settlement, ...settlements]); void mutateBackendData("create-settlement", { settlement }).catch(error => console.error("Settlement record failed", error)); }}>Record settlement</button><p className="oi-admin__muted">This records an admin note only. It does not move money or initiate a payout.</p></section><section className="oi-admin__panel"><h2>Settlement records</h2>{settlements.length ? settlements.map(item => <div className="oi-admin__attention" key={item.id}><div><b>{item.id}</b><span>{new Date(item.date).toLocaleString()}</span></div><strong>{money(item.amount)}</strong><span className="oi-admin__badge">{item.status}</span></div>) : <p className="oi-admin__muted">No settlement records.</p>}</section></>}
+                {tab === "finance" && <>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Platform finance</h2><p>Live figures from order lines, payments, payouts and settlements.</p></div><label className="oi-admin__rate">Commission rate (%)<input type="number" min="0" max="100" step="0.1" value={commissionRate} onChange={event => saveCommission(event.target.value)} /></label></div>
+                        <div className="oi-admin__metrics oi-admin__metrics--finance">
+                            <article><span>Gross sales</span><strong>{money(financeReport?.totals.grossSales ?? 0)}</strong></article>
+                            <article><span>Commission</span><strong>{money(financeReport?.totals.commission ?? 0)}</strong></article>
+                            <article><span>Net seller earnings</span><strong>{money(financeReport?.totals.netEarnings ?? 0)}</strong></article>
+                            <article><span>Paid out</span><strong>{money(financeReport?.totals.paidOut ?? 0)}</strong></article>
+                            <article><span>Pending payouts</span><strong>{money(financeReport?.totals.pendingPayouts ?? 0)}</strong></article>
+                            <article><span>Available balance</span><strong>{money(financeReport?.totals.availableBalance ?? 0)}</strong></article>
+                        </div>
+                        <div className="oi-reconciliation__ok">
+                            <Icon name="shield" size={15} />
+                            <span>{financeReport?.reconciliation.available
+                                ? `Payment reconciliation: ${financeReport.reconciliation.matched}/${financeReport.reconciliation.checked} matched, ${financeReport.reconciliation.mismatches} mismatch${financeReport.reconciliation.mismatches === 1 ? "" : "es"}.`
+                                : financeReport?.reconciliation.message ?? "Payment reconciliation is unavailable."}</span>
+                        </div>
+                    </section>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Payout queue</h2><p>Seller requests stay pending until an administrator approves and confirms payment.</p></div></div>
+                        {payouts.length ? (
+                            <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Seller</th><th>Reference</th><th>Requested</th><th>Status</th><th className="oi-seller-table__right">Amount</th><th className="oi-seller-table__right">Actions</th></tr></thead><tbody>{payouts.map(payout => (
+                                <tr key={payout.id}>
+                                    <td><b>{payout.sellerName ?? payout.shopName ?? "Seller"}</b><small>{payout.shopName ?? payout.shopId}</small></td>
+                                    <td><b>{payout.reference}</b><small>{payout.note ?? "—"}</small></td>
+                                    <td>{new Date(payout.requestedAt).toLocaleDateString()}</td>
+                                    <td><span className={`oi-payout-badge oi-payout-badge--${payout.status.toLowerCase()}`}>{payout.status.toLowerCase()}</span></td>
+                                    <td className="oi-seller-table__right">{money(payout.amount)}</td>
+                                    <td className="oi-seller-table__right"><div className="oi-admin__row-actions">
+                                        <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => void openPayout(payout.id)}>Details</button>
+                                        {payout.status === "REQUESTED" && <>
+                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "approve-payout")}>Approve</button>
+                                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "reject-payout")}>Reject</button>
+                                        </>}
+                                        {(payout.status === "APPROVED" || payout.status === "PROCESSING") && <>
+                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "mark-payout-paid")}>Mark paid</button>
+                                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={financeBusy === payout.id} onClick={() => void processPayout(payout.id, "fail-payout")}>Fail</button>
+                                        </>}
+                                    </div></td>
+                                </tr>
+                            ))}</tbody></table></div>
+                        ) : <p className="oi-admin__muted">No payout requests yet.</p>}
+                    </section>
+                    {payoutDetail && <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Payout audit · {payoutDetail.reference}</h2><p>{money(payoutDetail.amount)} · {payoutDetail.status.toLowerCase()}</p></div><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => setPayoutDetail(null)}>Close</button></div><div className="oi-admin__audit">{payoutDetail.events?.length ? payoutDetail.events.map(event => <div className="oi-admin__attention" key={event.id}><div><b>{event.toStatus.toLowerCase()}</b><span>{event.actorName ?? event.actorRole ?? "System"} · {new Date(event.createdAt).toLocaleString()}</span></div><span>{event.note ?? event.reference ?? "—"}</span></div>) : <p className="oi-admin__muted">No audit events recorded.</p>}</div></section>}
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading"><div><h2>Settlement history</h2><p>Sale payouts and admin adjustments. Subscription charges are excluded.</p></div></div>
+                        <form className="oi-admin__inline-form" onSubmit={event => void recordAdjustment(event)}>
+                            <label>Shop<select value={adjustment.shopId} onChange={event => setAdjustment({ ...adjustment, shopId: event.target.value })}><option value="">Select a shop</option>{shops.map(item => <option key={item.id} value={item.id}>{item.shop}</option>)}</select></label>
+                            <label>Amount (₦)<input type="number" min="1" step="0.01" value={adjustment.amount} onChange={event => setAdjustment({ ...adjustment, amount: event.target.value })} /></label>
+                            <label>Unique reference<input type="text" value={adjustment.reference} onChange={event => setAdjustment({ ...adjustment, reference: event.target.value })} placeholder="ADJ-2026-001" /></label>
+                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={financeBusy === "adjustment"}>Record adjustment</button>
+                        </form>
+                        {settlementRecords.length ? (
+                            <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Reference</th><th>Seller</th><th>Kind</th><th>Date</th><th>Status</th><th className="oi-seller-table__right">Amount</th></tr></thead><tbody>{settlementRecords.map(record => (
+                                <tr key={record.id}>
+                                    <td><b>{record.reference ?? record.id}</b><small>{record.payoutId ? `Payout ${record.payoutId}` : "Manual adjustment"}</small></td>
+                                    <td>{record.shopId ?? record.sellerId}</td>
+                                    <td>{record.kind.toLowerCase()}</td>
+                                    <td>{new Date(record.createdAt).toLocaleDateString()}</td>
+                                    <td>{record.status}</td>
+                                    <td className="oi-seller-table__right">{money(record.amount)}</td>
+                                </tr>
+                            ))}</tbody></table></div>
+                        ) : <p className="oi-admin__muted">No sale settlements or adjustments recorded.</p>}
+                    </section>
+                </>}
 
                 {tab === "subscriptions" && <section className="oi-admin__panel"><div className="oi-admin__panel-heading"><div><h2>Subscription management</h2><p>Subscription billing is not connected; changes here are local status records.</p></div></div>{shops.length ? shops.map(item => <div className="oi-admin__shop-control" key={item.slug}><div><b>{item.shop}</b><span>Plan: {item.plan ?? "Free"}</span></div><label>Subscription status<select value={item.subscriptionStatus ?? "Active"} onChange={event => saveShop({ ...item, subscriptionStatus: event.target.value as AdminShop["subscriptionStatus"] })}><option>Active</option><option>Paused</option><option>Cancelled</option></select></label></div>) : <p className="oi-admin__muted">No subscriptions are registered.</p>}<div className="oi-admin__plan-note"><Icon name="shield" size={17} /><span>Plan pricing, recurring charges and invoices need a billing provider before they can be administered here.</span></div></section>}
             </div>

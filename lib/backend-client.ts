@@ -94,6 +94,8 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         result = await apiFetch("/seller/shop");
     } else if (view === "seller-earnings") {
         result = await apiFetch(`/seller/earnings${queryOf(params)}`);
+    } else if (view === "seller-payouts") {
+        result = await apiFetch(`/seller/payouts${queryOf(params)}`);
     } else if (view === "seller-notifications") {
         result = await apiFetch(`/seller/notifications${queryOf(params)}`);
     } else if (view === "orders") {
@@ -115,6 +117,14 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         result = { reviews: (await apiFetch<Record<string, unknown>[]>(`/reviews?${query}`)).map(mapReview) };
     } else if (view === "rating-stats") {
         result = await apiFetch("/reviews/stats");
+    } else if (view === "admin-payouts") {
+        result = await apiFetch(`/admin/payouts${queryOf(params)}`);
+    } else if (view === "admin-payout-detail") {
+        result = await apiFetch(`/admin/payouts/${encodeURIComponent(params.id ?? "")}`);
+    } else if (view === "admin-settlements") {
+        result = await apiFetch(`/admin/settlements${queryOf(params)}`);
+    } else if (view === "admin-finance-report") {
+        result = await apiFetch(`/admin/finance/report${queryOf(params)}`);
     } else if (view === "admin") {
         const data = await apiFetch<Record<string, any>>("/admin/data");
         result = {
@@ -290,8 +300,34 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
         return await apiFetch<T>("/admin/settings/commission", { method: "PUT", body: JSON.stringify({ rate: settings.commissionRate }) });
     }
     if (action === "create-settlement") {
-        const settlement = payload.settlement as { amount: number };
-        return await apiFetch<T>("/admin/settlements", { method: "POST", body: JSON.stringify({ amount: settlement.amount }) });
+        const settlement = payload.settlement as { sellerId: string; shopId?: string; amount: number; reference: string };
+        return await apiFetch<T>("/admin/settlements", {
+            method: "POST",
+            body: JSON.stringify({
+                sellerId: settlement.sellerId,
+                ...(settlement.shopId ? { shopId: settlement.shopId } : {}),
+                amount: settlement.amount,
+                reference: settlement.reference
+            })
+        });
+    }
+    if (action === "request-payout") {
+        return await apiFetch<T>("/seller/payouts", { method: "POST", body: JSON.stringify(payload.payout) });
+    }
+    if (action === "cancel-payout") {
+        return await apiFetch<T>(`/seller/payouts/${encodeURIComponent(String(payload.id))}/cancel`, { method: "POST" });
+    }
+    if (action === "approve-payout" || action === "reject-payout" || action === "mark-payout-paid" || action === "fail-payout") {
+        const paths: Record<string, string> = {
+            "approve-payout": "approve",
+            "reject-payout": "reject",
+            "mark-payout-paid": "mark-paid",
+            "fail-payout": "fail"
+        };
+        return await apiFetch<T>(`/admin/payouts/${encodeURIComponent(String(payload.id))}/${paths[action]}`, {
+            method: "POST",
+            body: JSON.stringify(payload.body ?? {})
+        });
     }
     if (action === "save-wishlist") {
         const items = payload.items as { product: { id?: string } }[];

@@ -122,6 +122,18 @@ type EarningsData = {
     }[];
     pagination: Pagination;
 };
+type PayoutStatus = "REQUESTED" | "APPROVED" | "REJECTED" | "PROCESSING" | "PAID" | "FAILED" | "CANCELLED";
+type SellerPayout = {
+    id: string; sellerId: string; sellerName: string | null; shopId: string; shopName: string | null;
+    amount: number; currency: string; status: PayoutStatus; reference: string; note: string | null;
+    requestedAt: string; reviewedAt: string | null; reviewerName: string | null; reviewNote: string | null;
+    paidAt: string | null; failureReason: string | null;
+};
+type SellerPayoutsData = {
+    summary: { currency: string; availableBalance: number; pendingPayouts: number; paidOut: number; lifetimeEarnings: number };
+    items: SellerPayout[];
+    pagination: Pagination;
+};
 type NotificationItem = {
     id: string; type: string; title: string; message: string; data: unknown;
     read: boolean; readAt: string | null; createdAt: string;
@@ -382,6 +394,11 @@ export function SellerSetup() {
     const [inventoryData, setInventoryData] = useState<InventoryData | null>(null);
     const [ordersData, setOrdersData] = useState<SellerOrdersData | null>(null);
     const [earningsData, setEarningsData] = useState<EarningsData | null>(null);
+    const [payoutsData, setPayoutsData] = useState<SellerPayoutsData | null>(null);
+    const [payoutAmount, setPayoutAmount] = useState("");
+    const [payoutNote, setPayoutNote] = useState("");
+    const [payoutBusy, setPayoutBusy] = useState(false);
+    const [payoutPage, setPayoutPage] = useState(1);
     const [notificationsData, setNotificationsData] = useState<NotificationsData | null>(null);
     const [shopProfile, setShopProfile] = useState<ShopProfileData | null>(null);
     const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -441,6 +458,11 @@ export function SellerSetup() {
         catch { setEarningsData(null); }
     }
 
+    async function loadPayoutsPanel(page = payoutPage) {
+        try { setPayoutsData(await readBackendData<SellerPayoutsData>("seller-payouts", { page: String(page), limit: "10" })); }
+        catch { setPayoutsData(null); }
+    }
+
     async function loadNotificationsPanel(page = notificationPage, onlyUnread = unreadOnly) {
         try {
             setNotificationsData(await readBackendData<NotificationsData>("seller-notifications", {
@@ -460,6 +482,7 @@ export function SellerSetup() {
                 loadOrdersPanel(),
                 loadInventoryPanel(),
                 loadEarningsPanel(),
+                loadPayoutsPanel(),
                 loadNotificationsPanel()
             ]);
             if (dashboardResult.status === "fulfilled") {
@@ -746,6 +769,34 @@ export function SellerSetup() {
         } catch (notificationError) {
             setError(notificationError instanceof Error ? notificationError.message : "Could not update notifications.");
         }
+    }
+
+    async function submitPayoutRequest(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const amount = Number(payoutAmount);
+        if (!Number.isFinite(amount) || amount <= 0) { setError("Enter a payout amount greater than zero."); return; }
+        setPayoutBusy(true);
+        try {
+            await mutateBackendData("request-payout", {
+                payout: { amount, ...(payoutNote.trim() ? { note: payoutNote.trim() } : {}) }
+            });
+            setPayoutAmount(""); setPayoutNote(""); setPayoutPage(1); setError("");
+            setError("Payout request sent for admin approval.");
+            await loadWorkspace();
+        } catch (payoutError) {
+            setError(payoutError instanceof Error ? payoutError.message : "Could not request this payout.");
+        } finally { setPayoutBusy(false); }
+    }
+
+    async function cancelPayoutRequest(id: string) {
+        setPayoutBusy(true);
+        try {
+            await mutateBackendData("cancel-payout", { id });
+            setError("Payout request cancelled.");
+            await loadWorkspace();
+        } catch (payoutError) {
+            setError(payoutError instanceof Error ? payoutError.message : "Could not cancel this payout.");
+        } finally { setPayoutBusy(false); }
     }
 
     function formatMoney(value: number) {
@@ -1201,6 +1252,32 @@ export function SellerSetup() {
                                     ))}</tbody></table></div>
                                 ) : <div className="oi-seller-dashboard__empty-state"><Icon name="wallet" size={24} /><h3>No transactions yet</h3><p>Completed sales and payouts will appear here.</p></div>}
                                 {earningsData && <Pager pagination={earningsData.pagination} onPage={page => { setTransactionPage(page); void loadEarningsPanel(page); }} />}
+                                <div className="oi-seller-payout">
+                                    <div className="oi-seller-dashboard__section-head"><h3>Request a payout</h3><span className="oi-seller-dashboard__hint">Payouts are manually approved and paid by an administrator.</span></div>
+                                    <div className="oi-seller-payout__summary">
+                                        <article><span>Available</span><strong>{formatMoney(payoutsData?.summary.availableBalance ?? earningsData?.summary.availableBalance ?? 0)}</strong></article>
+                                        <article><span>Awaiting review</span><strong>{formatMoney(payoutsData?.summary.pendingPayouts ?? 0)}</strong></article>
+                                        <article><span>Paid to date</span><strong>{formatMoney(payoutsData?.summary.paidOut ?? earningsData?.summary.paidOut ?? 0)}</strong></article>
+                                    </div>
+                                    <form className="oi-seller-payout__form" onSubmit={event => void submitPayoutRequest(event)}>
+                                        <label>Amount (₦)<input type="number" min="1" step="0.01" value={payoutAmount} onChange={event => setPayoutAmount(event.target.value)} placeholder="0.00" required /></label>
+                                        <label>Note (optional)<input type="text" maxLength={500} value={payoutNote} onChange={event => setPayoutNote(event.target.value)} placeholder="Bank transfer details" /></label>
+                                        <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={payoutBusy}>{payoutBusy ? "Sending…" : "Request payout"}</button>
+                                    </form>
+                                    <div className="oi-seller-dashboard__section-head"><h3>Payout history</h3></div>
+                                    {payoutsData?.items.length ? (
+                                        <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Reference</th><th>Requested</th><th>Status</th><th className="oi-seller-table__right">Amount</th><th className="oi-seller-table__right">Action</th></tr></thead><tbody>{payoutsData.items.map(payout => (
+                                            <tr key={payout.id}>
+                                                <td><b>{payout.reference}</b><small>{payout.note ?? payout.reviewerName ?? "—"}</small></td>
+                                                <td>{shortDate(payout.requestedAt)}</td>
+                                                <td><span className={`oi-payout-badge oi-payout-badge--${payout.status.toLowerCase()}`}>{payout.status.toLowerCase()}</span></td>
+                                                <td className="oi-seller-table__right">{formatMoney(payout.amount)}</td>
+                                                <td className="oi-seller-table__right">{payout.status === "REQUESTED" ? <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={payoutBusy} onClick={() => void cancelPayoutRequest(payout.id)}>Cancel</button> : <span className="oi-seller-dashboard__hint">{payout.paidAt ? shortDate(payout.paidAt) : "—"}</span>}</td>
+                                            </tr>
+                                        ))}</tbody></table></div>
+                                    ) : <div className="oi-seller-dashboard__empty-state"><Icon name="wallet" size={22} /><h3>No payout requests yet</h3><p>Request a payout once you have available earnings.</p></div>}
+                                    {payoutsData && <Pager pagination={payoutsData.pagination} onPage={page => { setPayoutPage(page); void loadPayoutsPanel(page); }} />}
+                                </div>
                                 <p className="oi-seller-dashboard__hint">Figures come from your shop's own order lines and recorded settlements. <Link href="/seller/pricing" className="oi-link">Review commission plans</Link>.</p>
                             </>}
                             {activeTab === "notifications" && <>
