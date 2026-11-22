@@ -47,6 +47,15 @@ function toBackendShopPayload(shop: Record<string, any>) {
     };
 }
 
+function queryOf(params: Record<string, string>) {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+    });
+    const text = query.toString();
+    return text ? `?${text}` : "";
+}
+
 export async function readBackendData<T>(view: string, params: Record<string, string> = {}): Promise<T> {
     let result: unknown;
     if (view === "marketplace") {
@@ -71,6 +80,22 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         const rows = await apiFetch<Record<string, unknown>[]>("/products/mine");
         const orders = await apiFetch<Record<string, unknown>[]>("/orders/seller");
         result = { shop: shops[0] ? legacyShop(shops[0], rows) : null, orders: orders.map(row => ({ ...row, status: normalizeStatus(String(row.status)) })) };
+    } else if (view === "seller-dashboard") {
+        result = await apiFetch("/seller/dashboard");
+    } else if (view === "seller-analytics") {
+        result = await apiFetch(`/seller/analytics${queryOf(params)}`);
+    } else if (view === "seller-performance") {
+        result = await apiFetch("/seller/products/performance");
+    } else if (view === "seller-orders") {
+        result = await apiFetch(`/seller/orders${queryOf(params)}`);
+    } else if (view === "seller-inventory") {
+        result = await apiFetch(`/seller/inventory${queryOf(params)}`);
+    } else if (view === "seller-shop") {
+        result = await apiFetch("/seller/shop");
+    } else if (view === "seller-earnings") {
+        result = await apiFetch(`/seller/earnings${queryOf(params)}`);
+    } else if (view === "seller-notifications") {
+        result = await apiFetch(`/seller/notifications${queryOf(params)}`);
     } else if (view === "orders") {
         result = { orders: (await apiFetch<Record<string, unknown>[]>("/orders")).map(mapOrder) };
     } else if (view === "payments") {
@@ -126,6 +151,35 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
         return await apiFetch<T>("/shops/mine", { method: "PATCH", body: JSON.stringify(toBackendShopPayload(shop)) });
     }
     if (action === "request-verification") return await apiFetch<T>("/shops/mine/verification-request", { method: "POST" });
+    if (action === "seller-update-stock") {
+        return await apiFetch<T>(`/seller/inventory/${encodeURIComponent(String(payload.productId))}/stock`, {
+            method: "PATCH",
+            body: JSON.stringify({ stock: Number(payload.stock) })
+        });
+    }
+    if (action === "seller-update-shop") {
+        const shop = payload.shop as Record<string, any>;
+        return await apiFetch<T>("/seller/shop", {
+            method: "PATCH",
+            body: JSON.stringify({
+                name: shop.name,
+                ownerName: shop.ownerName ?? shop.owner,
+                location: shop.location,
+                tagline: shop.tagline || null,
+                description: shop.description || null
+            })
+        });
+    }
+    if (action === "seller-request-verification") return await apiFetch<T>("/seller/shop/verification-request", { method: "POST" });
+    if (action === "seller-update-order-status") {
+        const { orderId, status, note } = payload as { orderId: string; status: string; note?: string };
+        return await apiFetch<T>(`/seller/orders/${encodeURIComponent(orderId)}/status`, {
+            method: "PATCH",
+            body: JSON.stringify({ status, ...(note ? { note } : {}) })
+        });
+    }
+    if (action === "seller-read-notification") return await apiFetch<T>(`/seller/notifications/${encodeURIComponent(String(payload.id))}/read`, { method: "PATCH" });
+    if (action === "seller-read-all-notifications") return await apiFetch<T>("/seller/notifications/read-all", { method: "PATCH" });
     if (action === "set-shop-publication") {
         const publication = payload.publication as Record<string, any>;
         return await apiFetch<T>("/shops/mine/publication", {

@@ -33,8 +33,10 @@ type SellerOrderStatus = "New" | "Processing" | "Shipped" | "Delivered" | "Cance
 type SellerOrder = {
     id: string;
     dbId?: string;
+    orderNumber?: string;
     customer: string;
     customerEmail?: string;
+    itemCount?: number;
     createdAt: string;
     total: number;
     subtotal?: number;
@@ -43,6 +45,96 @@ type SellerOrder = {
     items: { productId: string; name: string; quantity: number; unitPrice?: number; lineTotal?: number }[];
     delivery?: { name: string; phone: string; address: string; state?: string; notes?: string };
     events?: { id: string; note?: string; createdAt: string; toStatus: string }[];
+};
+
+type Pagination = { page: number; limit: number; total: number; pages: number };
+type SellerRestrictions = {
+    accountStatus: string;
+    shopStatus: string;
+    verified: boolean;
+    published: boolean;
+    canPublish: boolean;
+    canManageInventory: boolean;
+    canManageOrders: boolean;
+    canEditProfile: boolean;
+    reasons: string[];
+};
+type SellerOrderSummary = {
+    id: string;
+    orderNumber: string;
+    status: string;
+    statusLabel: string;
+    customer: { name: string; email: string | null };
+    items: { productId: string | null; name: string; quantity: number; unitPrice: number; lineTotal: number }[];
+    itemCount: number;
+    subtotal: number;
+    orderTotal: number;
+    paymentStatus: string;
+    paymentMethod: string | null;
+    placedAt: string;
+};
+type DashboardData = {
+    shop: { id: string; name: string; slug: string; verified: boolean; published: boolean; status: string; verificationRequestedAt: string | null };
+    restrictions: SellerRestrictions;
+    stats: {
+        totalProducts: number; activeProducts: number; outOfStockProducts: number; lowStockProducts: number;
+        totalOrders: number; pendingOrders: number; processingOrders: number; shippedOrders: number;
+        completedOrders: number; cancelledOrders: number; refundedOrders: number;
+        grossSales: number; commissionRate: number; commission: number; netEarnings: number;
+        paidOut: number; availableBalance: number; unreadNotifications: number;
+    };
+    recentOrders: SellerOrderSummary[];
+    lowStockProducts: { id: string; name: string; stock: number; status: string }[];
+};
+type AnalyticsData = {
+    range: { days: number; from: string; to: string };
+    summary: { revenue: number; orders: number; averageOrderValue: number; earnings: number; commissionRate: number };
+    series: { date: string; orders: number; revenue: number; earnings: number }[];
+};
+type PerformanceData = {
+    items: {
+        id: string; name: string; slug: string; price: number; stock: number; status: string;
+        imageUrl: string | null; category: string | null; unitsSold: number; orderCount: number; revenue: number;
+    }[];
+    summary: { totalProducts: number; totalUnitsSold: number; totalRevenue: number };
+};
+type InventoryItem = {
+    id: string; name: string; slug: string; sku: string | null; price: number; stock: number;
+    status: string; imageUrl: string | null; category: string | null; lowStock: boolean; stockValue: number;
+};
+type InventoryData = {
+    items: InventoryItem[];
+    summary: {
+        totalProducts: number; activeProducts: number; outOfStockProducts: number;
+        lowStockProducts: number; totalUnits: number; totalStockValue: number;
+    };
+    pagination: Pagination;
+};
+type SellerOrdersData = { items: SellerOrderSummary[]; pagination: Pagination; counts: Record<string, number> };
+type EarningsData = {
+    summary: {
+        currency: string; commissionRate: number; grossSales: number; totalRefunds: number;
+        commission: number; netEarnings: number; paidOut: number; availableBalance: number; totalOrders: number;
+    };
+    items: {
+        id: string; type: "sale" | "refund" | "payout"; title: string; orderNumber: string | null;
+        reference: string | null; date: string; gross: number; commission: number; net: number; status: string;
+    }[];
+    pagination: Pagination;
+};
+type NotificationItem = {
+    id: string; type: string; title: string; message: string; data: unknown;
+    read: boolean; readAt: string | null; createdAt: string;
+};
+type NotificationsData = { items: NotificationItem[]; pagination: Pagination; unreadCount: number };
+type ShopProfileData = {
+    shop: {
+        id: string; name: string; slug: string; ownerName: string; location: string | null;
+        tagline: string | null; description: string | null; verified: boolean; published: boolean;
+        status: string; verificationRequestedAt: string | null; productCount: number; createdAt: string;
+    };
+    verification: { verified: boolean; requestedAt: string | null; canRequest: boolean; canPublish: boolean };
+    restrictions: SellerRestrictions;
 };
 
 /** Sellers may progress or cancel; refunds remain an administrator action. */
@@ -80,7 +172,7 @@ type ShopSetup = {
     status?: "Active" | "Paused";
 };
 type Stage = "landing" | "register" | "products" | "dashboard";
-type WorkspaceTab = "overview" | "products" | "inventory" | "orders" | "earnings" | "subscription" | "settings";
+type WorkspaceTab = "overview" | "analytics" | "products" | "inventory" | "orders" | "earnings" | "notifications" | "subscription" | "settings";
 
 type ProductDraft = Omit<Listing, "id" | "dbId" | "status">;
 const blankProduct: ProductDraft = { name: "", price: "", size: "", stock: "", category: "crude-palm", description: "", imageUrl: "", media: [] };
@@ -92,12 +184,60 @@ function mediaToText(media?: ProductMedia[]) {
 function textToMedia(value: string): ProductMedia[] {
     return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(url => ({ url }));
 }
-const workspaceTabs: { id: WorkspaceTab; label: string; icon: "grid" | "box" | "archive" | "receipt" | "wallet" | "sparkle" | "settings" }[] = [
+
+const ORDER_STATUS_TO_SELLER: Record<string, SellerOrderStatus> = {
+    PENDING: "New", PROCESSING: "Processing", SHIPPED: "Shipped",
+    DELIVERED: "Delivered", CANCELLED: "Cancelled", REFUNDED: "Refunded"
+};
+
+function toSellerOrder(row: SellerOrderSummary): SellerOrder {
+    return {
+        id: row.id,
+        dbId: row.id,
+        orderNumber: row.orderNumber,
+        customer: row.customer.name,
+        customerEmail: row.customer.email ?? undefined,
+        itemCount: row.itemCount,
+        createdAt: row.placedAt,
+        total: row.subtotal,
+        subtotal: row.subtotal,
+        status: ORDER_STATUS_TO_SELLER[row.status] ?? "New",
+        paymentStatus: row.paymentStatus,
+        items: row.items.map(item => ({
+            productId: item.productId ?? "", name: item.name, quantity: item.quantity,
+            unitPrice: item.unitPrice, lineTotal: item.lineTotal
+        }))
+    };
+}
+
+function displayListingStatus(status: string): ListingStatus {
+    const value = String(status ?? "").toLowerCase();
+    if (value === "active") return "Active";
+    if (value === "out_of_stock" || value === "out of stock") return "Out of stock";
+    return "Draft";
+}
+
+function shortDate(value: string) {
+    return new Date(value).toLocaleDateString("en-NG", { month: "short", day: "numeric" });
+}
+
+function notificationIcon(type: string): "shield" | "receipt" | "wallet" | "box" | "bell" {
+    const value = type.toUpperCase();
+    if (value.includes("STOCK")) return "box";
+    if (value.includes("PAYMENT") || value.includes("REFUND") || value.includes("PAYOUT")) return "wallet";
+    if (value.includes("ORDER")) return "receipt";
+    if (value.includes("VERIFICATION") || value.includes("SUSPENSION") || value.includes("PROFILE")) return "shield";
+    return "bell";
+}
+
+const workspaceTabs: { id: WorkspaceTab; label: string; icon: "grid" | "box" | "archive" | "receipt" | "wallet" | "sparkle" | "settings" | "chart" | "bell" }[] = [
     { id: "overview", label: "Overview", icon: "grid" },
+    { id: "analytics", label: "Analytics", icon: "chart" },
     { id: "products", label: "Products", icon: "box" },
     { id: "inventory", label: "Inventory", icon: "archive" },
     { id: "orders", label: "Orders", icon: "receipt" },
     { id: "earnings", label: "Earnings", icon: "wallet" },
+    { id: "notifications", label: "Notifications", icon: "bell" },
     { id: "subscription", label: "Subscription", icon: "sparkle" },
     { id: "settings", label: "Shop settings", icon: "settings" },
 ];
@@ -170,6 +310,48 @@ function ProductEditor({ item, categories, onSave, onDelete, busy = false }: {
     );
 }
 
+function StockControl({ productId, stock, busy, disabled, onSave }: {
+    productId: string; stock: number; busy: boolean; disabled: boolean; onSave: (productId: string, stock: number) => void;
+}) {
+    const [value, setValue] = useState(String(stock));
+    useEffect(() => { setValue(String(stock)); }, [stock]);
+    function commit() {
+        const next = Number(value);
+        if (Number.isFinite(next) && next >= 0 && next !== stock) onSave(productId, next);
+    }
+    return (
+        <div className="oi-seller-stock-control">
+            <button type="button" aria-label={`Decrease stock for ${productId}`} disabled={disabled || busy} onClick={() => { const next = Math.max(0, Number(value || 0) - 1); setValue(String(next)); onSave(productId, next); }}>−</button>
+            <input aria-label={`Stock for ${productId}`} type="number" min="0" value={value} disabled={disabled || busy} onChange={event => setValue(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); commit(); } }} />
+            <button type="button" aria-label={`Increase stock for ${productId}`} disabled={disabled || busy} onClick={() => { const next = Number(value || 0) + 1; setValue(String(next)); onSave(productId, next); }}>+</button>
+        </div>
+    );
+}
+
+function SalesBars({ series, compact = false }: { series: AnalyticsData["series"]; compact?: boolean }) {
+    const max = Math.max(1, ...series.map(point => point.revenue));
+    return (
+        <div className={`oi-seller-chart${compact ? " oi-seller-chart--compact" : ""}`} role="img" aria-label="Daily sales revenue">
+            {series.map(point => (
+                <div className="oi-seller-chart__bar" key={point.date} title={`${point.date}: ${point.orders} orders · ₦${point.revenue.toLocaleString("en-NG")}`}>
+                    <div className="oi-seller-chart__fill" style={{ height: `${point.revenue > 0 ? Math.max(8, (point.revenue / max) * 100) : 3}%` }} />
+                    <span>{shortDate(point.date)}</span>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function Pager({ pagination, onPage }: { pagination: Pagination; onPage: (page: number) => void }) {
+    return (
+        <div className="oi-seller-pager">
+            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={pagination.page <= 1} onClick={() => onPage(pagination.page - 1)}>Previous</button>
+            <span>Page {pagination.page} of {pagination.pages} · {pagination.total} total</span>
+            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={pagination.page >= pagination.pages} onClick={() => onPage(pagination.page + 1)}>Next</button>
+        </div>
+    );
+}
+
 export function SellerSetup() {
     const { user, ready: authReady, refreshUser } = useAuth();
     const router = useRouter();
@@ -194,6 +376,113 @@ export function SellerSetup() {
     const [saving, setSaving] = useState(false);
     const [orderBusy, setOrderBusy] = useState("");
     const [settingsDraft, setSettingsDraft] = useState({ shop: "", owner: "", location: "", tagline: "", description: "" });
+    const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+    const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+    const [performance, setPerformance] = useState<PerformanceData | null>(null);
+    const [inventoryData, setInventoryData] = useState<InventoryData | null>(null);
+    const [ordersData, setOrdersData] = useState<SellerOrdersData | null>(null);
+    const [earningsData, setEarningsData] = useState<EarningsData | null>(null);
+    const [notificationsData, setNotificationsData] = useState<NotificationsData | null>(null);
+    const [shopProfile, setShopProfile] = useState<ShopProfileData | null>(null);
+    const [workspaceLoading, setWorkspaceLoading] = useState(false);
+    const [analyticsDays, setAnalyticsDays] = useState(30);
+    const [orderStatus, setOrderStatus] = useState("ALL");
+    const [orderPage, setOrderPage] = useState(1);
+    const [orderSearch, setOrderSearch] = useState("");
+    const [inventorySearch, setInventorySearch] = useState("");
+    const [inventoryPage, setInventoryPage] = useState(1);
+    const [lowStockOnly, setLowStockOnly] = useState(false);
+    const [transactionPage, setTransactionPage] = useState(1);
+    const [notificationPage, setNotificationPage] = useState(1);
+    const [unreadOnly, setUnreadOnly] = useState(false);
+    const [stockBusy, setStockBusy] = useState("");
+
+    async function loadAnalyticsPanel(days = analyticsDays) {
+        try { setAnalytics(await readBackendData<AnalyticsData>("seller-analytics", { days: String(days) })); }
+        catch { setAnalytics(null); }
+    }
+
+    async function loadOrdersPanel(page = orderPage, status = orderStatus, search = orderSearch) {
+        const params: Record<string, string> = { limit: "20", page: String(page) };
+        if (status !== "ALL") params.status = status;
+        if (search.trim()) params.search = search.trim();
+        try { setOrdersData(await readBackendData<SellerOrdersData>("seller-orders", params)); }
+        catch { setOrdersData(null); }
+    }
+
+    async function loadInventoryPanel(page = inventoryPage, search = inventorySearch, onlyLow = lowStockOnly) {
+        const params: Record<string, string> = { limit: "100", page: String(page) };
+        if (search.trim()) params.search = search.trim();
+        if (onlyLow) params.lowStock = "true";
+        try {
+            const data = await readBackendData<InventoryData>("seller-inventory", params);
+            setInventoryData(data);
+            if (data.items.length) {
+                setSetup(current => current ? {
+                    ...current,
+                    products: current.products.map(item => {
+                        const match = data.items.find(row => row.id === item.dbId || row.id === item.id);
+                        return match ? {
+                            ...item,
+                            name: match.name,
+                            price: String(match.price),
+                            stock: String(match.stock),
+                            status: displayListingStatus(match.status),
+                            imageUrl: match.imageUrl ?? item.imageUrl
+                        } : item;
+                    })
+                } : current);
+            }
+        } catch { setInventoryData(null); }
+    }
+
+    async function loadEarningsPanel(page = transactionPage) {
+        try { setEarningsData(await readBackendData<EarningsData>("seller-earnings", { page: String(page), limit: "10" })); }
+        catch { setEarningsData(null); }
+    }
+
+    async function loadNotificationsPanel(page = notificationPage, onlyUnread = unreadOnly) {
+        try {
+            setNotificationsData(await readBackendData<NotificationsData>("seller-notifications", {
+                limit: "20", page: String(page), ...(onlyUnread ? { unreadOnly: "true" } : {})
+            }));
+        } catch { setNotificationsData(null); }
+    }
+
+    async function loadWorkspace() {
+        setWorkspaceLoading(true);
+        try {
+            const [dashboardResult, performanceResult, profileResult] = await Promise.allSettled([
+                readBackendData<DashboardData>("seller-dashboard"),
+                readBackendData<PerformanceData>("seller-performance"),
+                readBackendData<ShopProfileData>("seller-shop"),
+                loadAnalyticsPanel(),
+                loadOrdersPanel(),
+                loadInventoryPanel(),
+                loadEarningsPanel(),
+                loadNotificationsPanel()
+            ]);
+            if (dashboardResult.status === "fulfilled") {
+                setDashboard(dashboardResult.value);
+                setSetup(current => current ? {
+                    ...current,
+                    verified: current.verified || dashboardResult.value.shop.verified,
+                    published: current.published || dashboardResult.value.shop.published,
+                    status: dashboardResult.value.shop.status === "SUSPENDED" ? "Paused" : "Active",
+                    orders: dashboardResult.value.recentOrders.map(toSellerOrder)
+                } : current);
+            }
+            if (performanceResult.status === "fulfilled") setPerformance(performanceResult.value);
+            if (profileResult.status === "fulfilled") {
+                setShopProfile(profileResult.value);
+                const shop = profileResult.value.shop;
+                setSettingsDraft({
+                    shop: shop.name, owner: shop.ownerName, location: shop.location ?? "",
+                    tagline: shop.tagline ?? "", description: shop.description ?? ""
+                });
+            }
+        } finally { setWorkspaceLoading(false); }
+    }
 
     async function loadSellerData() {
         const result = await readBackendData<{ shop: Record<string, any> | null; orders: SellerOrder[] }>("seller");
@@ -226,6 +515,7 @@ export function SellerSetup() {
             status: row.status ?? "Active"
         };
         setSetup(existing);
+        await loadWorkspace();
         return existing;
     }
 
@@ -328,7 +618,7 @@ export function SellerSetup() {
         if (!setup) return;
         setSaving(true);
         try {
-            await mutateBackendData("request-verification", {});
+            await mutateBackendData("seller-request-verification", {});
             await loadSellerData();
             setError("Verification requested. An administrator will review your shop before you can publish.");
         } catch (verificationError) {
@@ -369,11 +659,10 @@ export function SellerSetup() {
         if (!setup) return;
         setSaving(true);
         try {
-            await mutateBackendData("update-shop", {
+            await mutateBackendData("seller-update-shop", {
                 shop: {
-                    slug: slugifyShopName(settingsDraft.shop),
                     name: settingsDraft.shop,
-                    owner: settingsDraft.owner,
+                    ownerName: settingsDraft.owner,
                     location: settingsDraft.location,
                     tagline: settingsDraft.tagline,
                     description: settingsDraft.description
@@ -404,7 +693,7 @@ export function SellerSetup() {
         if (!setup || orderBusy) return;
         setOrderBusy(orderId);
         try {
-            await mutateBackendData("update-order", { orderId, status });
+            await mutateBackendData("seller-update-order-status", { orderId, status });
             await loadSellerData();
             setError("");
         } catch (updateError) {
@@ -419,13 +708,43 @@ export function SellerSetup() {
         if (!window.confirm("Cancel this order? Reserved stock will be returned to your shop.")) return;
         setOrderBusy(orderId);
         try {
-            await mutateBackendData("cancel-order", { orderId, reason: "Cancelled by seller" });
+            await mutateBackendData("seller-update-order-status", { orderId, status: "CANCELLED", note: "Cancelled by seller" });
             await loadSellerData();
             setError("");
         } catch (cancelError) {
             setError(cancelError instanceof Error ? cancelError.message : "Could not cancel this order.");
         } finally {
             setOrderBusy("");
+        }
+    }
+
+    async function updateStock(productId: string, stock: number) {
+        if (!setup || stockBusy || !Number.isFinite(stock) || stock < 0) return;
+        setStockBusy(productId);
+        try {
+            await mutateBackendData("seller-update-stock", { productId, stock });
+            await loadSellerData();
+            setError("");
+        } catch (stockError) {
+            setError(stockError instanceof Error ? stockError.message : "Could not update stock.");
+        } finally { setStockBusy(""); }
+    }
+
+    async function readNotification(id: string) {
+        try {
+            await mutateBackendData("seller-read-notification", { id });
+            await loadSellerData();
+        } catch (notificationError) {
+            setError(notificationError instanceof Error ? notificationError.message : "Could not update this notification.");
+        }
+    }
+
+    async function readAllNotifications() {
+        try {
+            await mutateBackendData("seller-read-all-notifications", {});
+            await loadSellerData();
+        } catch (notificationError) {
+            setError(notificationError instanceof Error ? notificationError.message : "Could not update notifications.");
         }
     }
 
@@ -658,6 +977,15 @@ export function SellerSetup() {
         const inventory = setup.products.reduce((total, item) => total + Number(item.stock || 0), 0);
         const delivered = setup.orders.filter(order => order.status === "Delivered").reduce((total, order) => total + order.total, 0);
         const pending = setup.orders.filter(order => order.status !== "Delivered" && order.status !== "Cancelled").reduce((total, order) => total + order.total, 0);
+        const stats = dashboard?.stats;
+        const restrictions = dashboard?.restrictions ?? shopProfile?.restrictions;
+        const canManageInventory = restrictions?.canManageInventory ?? setup.status !== "Paused";
+        const canManageOrders = restrictions?.canManageOrders ?? setup.status !== "Paused";
+        const canEditProfile = restrictions?.canEditProfile ?? setup.status !== "Paused";
+        const canPublish = restrictions?.canPublish ?? false;
+        const unreadCount = notificationsData?.unreadCount ?? stats?.unreadNotifications ?? 0;
+        const orders = ordersData?.items.map(toSellerOrder) ?? dashboard?.recentOrders.map(toSellerOrder) ?? setup.orders;
+        const lowStockItems = inventoryData?.items.filter(item => item.lowStock) ?? [];
         const tabTitle = workspaceTabs.find(tab => tab.id === activeTab)?.label ?? "Overview";
         const shopSlug = setup.slug ?? slugifyShopName(setup.shop);
         const currentPlan = getPlan(setup.plan?.toLowerCase() ?? "starter");
@@ -670,7 +998,7 @@ export function SellerSetup() {
                         <div className="oi-sidebar__brand"><Logo size="sm" alt="Oilinga" /></div>
                         <small className="oi-sidebar__label">SELLER PORTAL</small>
                         <nav className="oi-sidebar__nav" aria-label="Seller workspace">
-                            {workspaceTabs.map(tab => <button key={tab.id} type="button" className={`oi-sidebar__link${activeTab === tab.id ? " is-active" : ""}`} aria-current={activeTab === tab.id ? "page" : undefined} onClick={() => setActiveTab(tab.id)}><Icon name={tab.icon} size={17} />{tab.label}</button>)}
+                            {workspaceTabs.map(tab => <button key={tab.id} type="button" className={`oi-sidebar__link${activeTab === tab.id ? " is-active" : ""}`} aria-current={activeTab === tab.id ? "page" : undefined} onClick={() => setActiveTab(tab.id)}><Icon name={tab.icon} size={17} />{tab.label}{tab.id === "notifications" && unreadCount > 0 && <span className="oi-seller-nav__badge">{unreadCount}</span>}</button>)}
                         </nav>
                         <div className="oi-sidebar__profile"><span className="oi-avatar">{setup.owner.trim().split(/\s+/).map(part => part[0]).slice(0, 2).join("").toUpperCase()}</span><div className="oi-sidebar__profile-text"><b className="oi-sidebar__profile-name">{setup.shop}</b><small className="oi-sidebar__profile-meta">Seller account</small></div></div>
                     </aside>
@@ -678,11 +1006,27 @@ export function SellerSetup() {
                         <div className="oi-seller-dashboard__heading">
                             <div>
                                 <span className="oi-eyebrow oi-eyebrow--green">SELLER DASHBOARD</span>
-                                <h1>{setup.shop}</h1>
+                                <h1>{setup.shop} <span className={`oi-seller-verify ${setup.verified ? "is-verified" : ""}`}><Icon name={setup.verified ? "shield" : "lock"} size={13} />{setup.verified ? "Verified" : "Unverified"}</span></h1>
                                 <p>{setup.location}{setup.tagline ? ` · ${setup.tagline}` : ""}</p>
                             </div>
                             <Link className="oi-seller-dashboard__live" href={`/shops/${shopSlug}`}><span /> View storefront</Link>
                         </div>
+                        {(restrictions?.reasons.length || shopProfile && !shopProfile.verification.verified) && (
+                            <div className={`oi-seller-alert ${restrictions?.reasons.length ? "oi-seller-alert--danger" : "oi-seller-alert--warning"}`}>
+                                <Icon name={restrictions?.reasons.length ? "lock" : "shield"} size={18} />
+                                <div>
+                                    <strong>{restrictions?.reasons.length ? "Limited shop access" : "Verification required"}</strong>
+                                    <span>{restrictions?.reasons.length
+                                        ? restrictions.reasons.join(" ")
+                                        : "Your shop is visible to buyers, but verification is needed before you can publish new products."}</span>
+                                </div>
+                                {shopProfile?.verification.canRequest && (
+                                    <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={saving} onClick={() => void requestVerification()}>{saving ? "Sending…" : "Request verification"}</button>
+                                )}
+                            </div>
+                        )}
+                        {workspaceLoading && <div className="oi-seller-refresh"><span className="oi-seller-refresh__dot" /> Refreshing your workspace…</div>}
+                        {error && <p role="alert" className="oi-seller-setup__error">{error}</p>}
                         <div className="oi-seller-dashboard__workspace">
                             <div className="oi-seller-dashboard__workspace-head">
                                 <div><span className="oi-eyebrow oi-eyebrow--green">SHOP WORKSPACE</span><h2>{tabTitle}</h2></div>
@@ -698,54 +1042,128 @@ export function SellerSetup() {
                             )}
 
                             {activeTab === "overview" && <>
-                                <div className="oi-seller-dashboard__metrics">
-                                    <article><span>Products</span><strong>{setup.products.length}{limit !== -1 ? ` / ${limit}` : ""}</strong><small>In your catalogue</small></article>
-                                    <article><span>Units in stock</span><strong>{inventory}</strong><small>Across all products</small></article>
-                                    <article><span>Orders</span><strong>{setup.orders.length}</strong><small>Received by your shop</small></article>
-                                    <article><span>Delivered sales</span><strong>{formatMoney(delivered)}</strong><small>Recorded delivered orders</small></article>
+                                <div className="oi-seller-metric-grid">
+                                    <article className="oi-seller-metric oi-seller-metric--primary"><span>Gross sales</span><strong>{formatMoney(stats?.grossSales ?? delivered)}</strong><small>Processing, shipped & delivered orders</small></article>
+                                    <article className="oi-seller-metric"><span>Net earnings</span><strong>{formatMoney(stats?.netEarnings ?? 0)}</strong><small>After {((stats?.commissionRate ?? 0) * 100).toFixed(1)}% commission</small></article>
+                                    <article className="oi-seller-metric"><span>Available balance</span><strong>{formatMoney(stats?.availableBalance ?? 0)}</strong><small>{formatMoney(stats?.paidOut ?? 0)} paid out</small></article>
+                                    <article className="oi-seller-metric"><span>Orders</span><strong>{stats?.totalOrders ?? setup.orders.length}</strong><small>{stats?.pendingOrders ?? 0} new · {pending > 0 ? formatMoney(pending) : "₦0"} pending</small></article>
                                 </div>
-                                <div className="oi-seller-dashboard__section-head"><h3>Recent products</h3><button type="button" className="oi-seller-dashboard__text-button" onClick={() => setActiveTab("products")}>Manage products →</button></div>
-                                <div className="oi-seller-dashboard__product-list">{setup.products.slice(0, 3).map(productRow)}</div>
+                                <div className="oi-seller-insight-grid">
+                                    <article className="oi-seller-panel">
+                                        <div className="oi-seller-panel__head"><div><span className="oi-eyebrow oi-eyebrow--green">SALES PULSE</span><h3>Last 7 days</h3></div><button type="button" className="oi-seller-dashboard__text-button" onClick={() => setActiveTab("analytics")}>View analytics →</button></div>
+                                        {analytics?.series.some(point => point.revenue > 0) ? <SalesBars series={analytics.series.slice(-7)} compact /> : <p className="oi-seller-dashboard__hint">No sales recorded in this period yet.</p>}
+                                        <div className="oi-seller-panel__foot"><span>{formatMoney(analytics?.summary.revenue ?? 0)}Revenue ({analytics?.range.days ?? 30}d)</span><span>{analytics?.summary.orders ?? 0} orders</span></div>
+                                    </article>
+                                    <article className="oi-seller-panel">
+                                        <div className="oi-seller-panel__head"><div><span className="oi-eyebrow oi-eyebrow--green">STOCK WATCH</span><h3>Needs attention</h3></div><button type="button" className="oi-seller-dashboard__text-button" onClick={() => setActiveTab("inventory")}>Manage inventory →</button></div>
+                                        {lowStockItems.length || dashboard?.lowStockProducts.length ? (
+                                            <ul className="oi-seller-stock-alerts">{(lowStockItems.length ? lowStockItems.map(item => ({ id: item.id, name: item.name, stock: item.stock })) : dashboard?.lowStockProducts ?? []).slice(0, 4).map(item => (
+                                                <li key={item.id}><span>{item.name}</span><b>{item.stock} left</b></li>
+                                            ))}</ul>
+                                        ) : <p className="oi-seller-dashboard__hint">All products have healthy stock levels.</p>}
+                                        <div className="oi-seller-panel__foot"><span>{stats?.totalProducts ?? setup.products.length} products</span><span>{inventory} units in stock</span></div>
+                                    </article>
+                                </div>
+                                <div className="oi-seller-dashboard__section-head"><h3>Recent orders</h3><button type="button" className="oi-seller-dashboard__text-button" onClick={() => setActiveTab("orders")}>All orders →</button></div>
+                                {orders.length ? (
+                                    <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th className="oi-seller-table__right">Amount</th></tr></thead><tbody>{orders.slice(0, 5).map(order => (
+                                        <tr key={order.id}><td><b>{order.orderNumber ?? order.id}</b></td><td>{order.customer}</td><td>{shortDate(order.createdAt)}</td><td><Badge tone={SELLER_STATUS_TONE[order.status] ?? "neutral"}>{order.status}</Badge></td><td className="oi-seller-table__right"><b>{formatMoney(order.total)}</b></td></tr>
+                                    ))}</tbody></table></div>
+                                ) : <div className="oi-seller-dashboard__empty-state"><Icon name="receipt" size={24} /><h3>No orders yet</h3><p>Orders placed for your products will appear here.</p></div>}
+                            </>}
+                            {activeTab === "analytics" && <>
+                                <div className="oi-seller-toolbar">
+                                    <div><span className="oi-eyebrow oi-eyebrow--green">SALES ANALYTICS</span><h3 className="oi-seller-toolbar__title">{analytics?.range.days ?? analyticsDays}-day performance</h3></div>
+                                    <div className="oi-seller-segmented" role="group" aria-label="Analytics range">{[7, 14, 30, 90].map(days => <button key={days} type="button" className={analyticsDays === days ? "is-active" : ""} onClick={() => { setAnalyticsDays(days); void loadAnalyticsPanel(days); }}>{days}d</button>)}</div>
+                                </div>
+                                <div className="oi-seller-metric-grid">
+                                    <article className="oi-seller-metric oi-seller-metric--primary"><span>Revenue</span><strong>{formatMoney(analytics?.summary.revenue ?? 0)}</strong><small>Seller line totals in range</small></article>
+                                    <article className="oi-seller-metric"><span>Orders</span><strong>{analytics?.summary.orders ?? 0}</strong><small>Processing, shipped & delivered</small></article>
+                                    <article className="oi-seller-metric"><span>Average order</span><strong>{formatMoney(analytics?.summary.averageOrderValue ?? 0)}</strong><small>Revenue per order</small></article>
+                                    <article className="oi-seller-metric"><span>Net earnings</span><strong>{formatMoney(analytics?.summary.earnings ?? 0)}</strong><small>After {((analytics?.summary.commissionRate ?? 0) * 100).toFixed(1)}% commission</small></article>
+                                </div>
+                                <article className="oi-seller-panel">
+                                    <div className="oi-seller-panel__head"><div><h3>Revenue by day</h3><p>{analytics?.range.from ?? "—"} to {analytics?.range.to ?? "—"}</p></div></div>
+                                    {analytics?.series.some(point => point.revenue > 0) ? <SalesBars series={analytics.series} /> : <p className="oi-seller-dashboard__hint">No completed sales in this range yet.</p>}
+                                </article>
+                                <div className="oi-seller-dashboard__section-head"><h3>Product performance</h3><span className="oi-seller-dashboard__hint">{performance?.summary.totalUnitsSold ?? 0} units sold · {formatMoney(performance?.summary.totalRevenue ?? 0)} revenue</span></div>
+                                {performance?.items.length ? (
+                                    <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Product</th><th>Status</th><th className="oi-seller-table__right">Units sold</th><th className="oi-seller-table__right">Orders</th><th className="oi-seller-table__right">Revenue</th></tr></thead><tbody>{performance.items.slice(0, 10).map(item => (
+                                        <tr key={item.id}><td><b>{item.name}</b><small>{item.category ?? "Uncategorised"}</small></td><td><span className={`oi-seller-dashboard__status ${item.status === "ACTIVE" ? "" : "oi-seller-dashboard__status--draft"}`}>{displayListingStatus(item.status)}</span></td><td className="oi-seller-table__right">{item.unitsSold}</td><td className="oi-seller-table__right">{item.orderCount}</td><td className="oi-seller-table__right"><b>{formatMoney(item.revenue)}</b></td></tr>
+                                    ))}</tbody></table></div>
+                                ) : <p className="oi-seller-dashboard__hint">Product performance will appear once sales are recorded.</p>}
                             </>}
                             {activeTab === "products" && <>
                                 {productFormOpen && !atLimit && <form className="oi-seller-dashboard__add-form" onSubmit={async event => { if (await addProduct(event)) setProductFormOpen(false); }}><label className="oi-seller-setup__field">Product name<input required value={product.name} onChange={e => setProduct({ ...product, name: e.target.value })} /></label><label className="oi-seller-setup__field">Category<select required value={product.category} onChange={e => setProduct({ ...product, category: e.target.value as ProductCategory })}>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label className="oi-seller-setup__field">Product description<textarea required value={product.description} onChange={e => setProduct({ ...product, description: e.target.value })} rows={3} /></label><label className="oi-seller-setup__field">Price (₦)<input required type="number" min="1" value={product.price} onChange={e => setProduct({ ...product, price: e.target.value })} /></label><label className="oi-seller-setup__field">Pack size<input required value={product.size} onChange={e => setProduct({ ...product, size: e.target.value })} /></label><label className="oi-seller-setup__field">Stock<input required type="number" min="0" value={product.stock} onChange={e => setProduct({ ...product, stock: e.target.value })} /></label><ProductImageFields value={product} onChange={patch => setProduct(current => ({ ...current, ...patch }))} /><button className="oi-btn oi-btn--primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save product"}</button>{error && <p role="alert" className="oi-seller-setup__error">{error}</p>}</form>}
                                 <div className="oi-seller-dashboard__product-list">{setup.products.length ? setup.products.map(productRow) : <p className="oi-seller-dashboard__empty">No products yet. Add your first product to start building your catalogue.</p>}</div>
                             </>}
-                            {activeTab === "inventory" && <div className="oi-seller-dashboard__product-list"><p className="oi-seller-dashboard__hint">Update stock quantities inline. Products with zero stock remain listed but cannot be fulfilled.</p>{setup.products.map(productRow)}</div>}
-                            {activeTab === "orders" && (
+                            {activeTab === "inventory" && <>
+                                <div className="oi-seller-toolbar">
+                                    <div><span className="oi-eyebrow oi-eyebrow--green">INVENTORY OVERVIEW</span><h3 className="oi-seller-toolbar__title">Live stock levels</h3></div>
+                                    <div className="oi-seller-toolbar__controls">
+                                        <input className="oi-input" type="search" placeholder="Search products" value={inventorySearch} onChange={event => { const search = event.target.value; setInventorySearch(search); setInventoryPage(1); void loadInventoryPanel(1, search, lowStockOnly); }} />
+                                        <label className="oi-seller-check"><input type="checkbox" checked={lowStockOnly} onChange={event => { const onlyLow = event.target.checked; setLowStockOnly(onlyLow); setInventoryPage(1); void loadInventoryPanel(1, inventorySearch, onlyLow); }} /> Low stock only</label>
+                                    </div>
+                                </div>
+                                <div className="oi-seller-metric-grid oi-seller-metric-grid--compact">
+                                    <article className="oi-seller-metric"><span>Products</span><strong>{inventoryData?.summary.totalProducts ?? setup.products.length}</strong><small>{stats?.activeProducts ?? 0} active</small></article>
+                                    <article className="oi-seller-metric"><span>Units in stock</span><strong>{inventoryData?.summary.totalUnits ?? inventory}</strong><small>Across all listings</small></article>
+                                    <article className="oi-seller-metric"><span>Low stock</span><strong>{inventoryData?.summary.lowStockProducts ?? dashboard?.stats.lowStockProducts ?? 0}</strong><small>1–5 units remaining</small></article>
+                                    <article className="oi-seller-metric"><span>Stock value</span><strong>{formatMoney(inventoryData?.summary.totalStockValue ?? 0)}</strong><small>At current prices</small></article>
+                                </div>
+                                {!canManageInventory && <p className="oi-seller-alert oi-seller-alert--warning">Your shop has restricted access. Stock levels are read-only until access is restored.</p>}
+                                <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Product</th><th>Category</th><th>Status</th><th className="oi-seller-table__right">Stock</th><th className="oi-seller-table__right">Stock value</th></tr></thead><tbody>{(inventoryData?.items ?? []).map(item => (
+                                    <tr key={item.id}>
+                                        <td><b>{item.name}</b><small>{item.sku ?? item.slug}</small></td>
+                                        <td>{item.category ?? "Uncategorised"}</td>
+                                        <td><span className={`oi-seller-dashboard__status ${item.status === "ACTIVE" ? "" : "oi-seller-dashboard__status--draft"}`}>{displayListingStatus(item.status)}</span>{item.lowStock && <span className="oi-seller-flag">Low</span>}</td>
+                                        <td className="oi-seller-table__right"><StockControl productId={item.id} stock={item.stock} busy={stockBusy === item.id} disabled={!canManageInventory} onSave={(id, next) => { void updateStock(id, next); }} /></td>
+                                        <td className="oi-seller-table__right"><b>{formatMoney(item.stockValue)}</b></td>
+                                    </tr>
+                                ))}</tbody></table></div>
+                                {!inventoryData?.items.length && <p className="oi-seller-dashboard__hint">No products match this view.</p>}
+                                {inventoryData && <Pager pagination={inventoryData.pagination} onPage={page => { setInventoryPage(page); void loadInventoryPanel(page, inventorySearch, lowStockOnly); }} />}
+                            </>}
+                            {activeTab === "orders" && <>
+                                <div className="oi-seller-toolbar">
+                                    <div><span className="oi-eyebrow oi-eyebrow--green">ORDER MANAGEMENT</span><h3 className="oi-seller-toolbar__title">Your shop's orders</h3></div>
+                                    <div className="oi-seller-toolbar__controls">
+                                        <input className="oi-input" type="search" placeholder="Order number or customer" value={orderSearch} onChange={event => { const search = event.target.value; setOrderSearch(search); setOrderPage(1); void loadOrdersPanel(1, orderStatus, search); }} />
+                                        <select aria-label="Filter orders by status" value={orderStatus} onChange={event => { const status = event.target.value; setOrderStatus(status); setOrderPage(1); void loadOrdersPanel(1, status, orderSearch); }}>
+                                            <option value="ALL">All statuses</option>
+                                            {(["New", "Processing", "Shipped", "Delivered", "Cancelled", "Refunded"] as SellerOrderStatus[]).map(status => <option key={status} value={status}>{status}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                                {!canManageOrders && <p className="oi-seller-alert oi-seller-alert--warning">Your shop has restricted access. Orders are read-only until access is restored.</p>}
                                 <div className="oi-seller-dashboard__orders">
-                                    {setup.orders.length ? setup.orders.map(order => {
+                                    {orders.length ? orders.map(order => {
                                         const nextStatuses = SELLER_TRANSITIONS[order.status] ?? [];
                                         const busy = orderBusy === order.id;
                                         return (
                                             <article key={order.id}>
                                                 <div className="oi-seller-order__info">
-                                                    <div className="oi-seller-order__head"><b>Order {order.id}</b><Badge tone={SELLER_STATUS_TONE[order.status] ?? "neutral"}>{order.status}</Badge></div>
-                                                    <span>{order.customer} · {new Date(order.createdAt).toLocaleDateString()}</span>
+                                                    <div className="oi-seller-order__head"><b>Order {order.orderNumber ?? order.id}</b><Badge tone={SELLER_STATUS_TONE[order.status] ?? "neutral"}>{order.status}</Badge></div>
+                                                    <span>{order.customer}{order.customerEmail ? ` · ${order.customerEmail}` : ""} · {shortDate(order.createdAt)}</span>
                                                     <small>{order.items.map(item => `${item.quantity} × ${item.name}`).join(", ")}</small>
-                                                    {order.delivery?.address && <small>{order.delivery.address}{order.delivery.state ? `, ${order.delivery.state}` : ""} · {order.delivery.phone}</small>}
+                                                    <small>{order.itemCount ?? order.items.reduce((sum, item) => sum + item.quantity, 0)} items · {order.paymentStatus === "SUCCESS" ? "Payment confirmed" : order.paymentStatus === "REFUNDED" ? "Refunded" : "Awaiting payment"}</small>
                                                 </div>
                                                 <div className="oi-seller-order__money">
                                                     <strong>{formatMoney(order.total)}</strong>
-                                                    <small>{order.paymentStatus === "SUCCESS" ? "Payment confirmed" : order.paymentStatus === "REFUNDED" ? "Refunded" : "Awaiting payment"}</small>
+                                                    <small>Seller items</small>
                                                 </div>
                                                 <div className="oi-seller-order__controls">
                                                     <select
                                                         aria-label={`Status for order ${order.id}`}
                                                         value={order.status}
-                                                        disabled={busy || nextStatuses.length === 0}
+                                                        disabled={busy || !canManageOrders || nextStatuses.length === 0}
                                                         onChange={event => void updateOrderStatus(order.dbId ?? order.id, event.target.value as SellerOrderStatus)}
                                                     >
                                                         <option value={order.status}>{order.status}</option>
                                                         {nextStatuses.map(status => <option key={status} value={status}>{status}</option>)}
                                                     </select>
                                                     {["New", "Processing"].includes(order.status) && (
-                                                        <button
-                                                            type="button"
-                                                            className="oi-seller-order__cancel"
-                                                            disabled={busy}
-                                                            onClick={() => void cancelSellerOrder(order.dbId ?? order.id)}
-                                                        >
+                                                        <button type="button" className="oi-seller-order__cancel" disabled={busy || !canManageOrders} onClick={() => void cancelSellerOrder(order.dbId ?? order.id)}>
                                                             {busy ? "Working…" : "Cancel order"}
                                                         </button>
                                                     )}
@@ -753,17 +1171,59 @@ export function SellerSetup() {
                                             </article>
                                         );
                                     }) : (
-                                        <div className="oi-seller-dashboard__empty-state"><Icon name="receipt" size={24} /><h3>No orders yet</h3><p>Orders placed for your products will appear here.</p></div>
+                                        <div className="oi-seller-dashboard__empty-state"><Icon name="receipt" size={24} /><h3>No orders found</h3><p>Orders placed for your products will appear here.</p></div>
                                     )}
                                 </div>
-                            )}
+                                {ordersData && <Pager pagination={ordersData.pagination} onPage={page => { setOrderPage(page); void loadOrdersPanel(page, orderStatus, orderSearch); }} />}
+                            </>}
                             {activeTab === "earnings" && <>
-                                <div className="oi-seller-dashboard__metrics">
-                                    <article><span>Delivered sales</span><strong>{formatMoney(delivered)}</strong><small>Based on delivered orders</small></article>
-                                    <article><span>Pending order value</span><strong>{formatMoney(pending)}</strong><small>Not yet delivered</small></article>
-                                    <article><span>Commission rate</span><strong>{currentPlan?.commission ?? 4}%</strong><small>On {currentPlan?.name ?? "Starter"} plan</small></article>
+                                <div className="oi-seller-toolbar">
+                                    <div><span className="oi-eyebrow oi-eyebrow--green">EARNINGS</span><h3 className="oi-seller-toolbar__title">Revenue & transactions</h3></div>
                                 </div>
-                                <p className="oi-seller-dashboard__hint">Earnings calculated from order records. <Link href="/seller/pricing" className="oi-link">Upgrade your plan</Link> to reduce your commission rate.</p>
+                                <div className="oi-seller-metric-grid">
+                                    <article className="oi-seller-metric oi-seller-metric--primary"><span>Gross sales</span><strong>{formatMoney(earningsData?.summary.grossSales ?? 0)}</strong><small>{earningsData?.summary.totalOrders ?? 0} qualifying orders</small></article>
+                                    <article className="oi-seller-metric"><span>Commission</span><strong>−{formatMoney(earningsData?.summary.commission ?? 0)}</strong><small>{((earningsData?.summary.commissionRate ?? 0) * 100).toFixed(1)}% platform rate</small></article>
+                                    <article className="oi-seller-metric"><span>Net earnings</span><strong>{formatMoney(earningsData?.summary.netEarnings ?? 0)}</strong><small>After commission</small></article>
+                                    <article className="oi-seller-metric"><span>Available balance</span><strong>{formatMoney(earningsData?.summary.availableBalance ?? 0)}</strong><small>{formatMoney(earningsData?.summary.paidOut ?? 0)} paid out to date</small></article>
+                                </div>
+                                <div className="oi-seller-dashboard__section-head"><h3>Transaction history</h3><span className="oi-seller-dashboard__hint">Refunds and payouts appear as negative amounts.</span></div>
+                                {earningsData?.items.length ? (
+                                    <div className="oi-seller-table-wrap"><table className="oi-seller-table"><thead><tr><th>Transaction</th><th>Type</th><th>Date</th><th>Status</th><th className="oi-seller-table__right">Gross</th><th className="oi-seller-table__right">Fee</th><th className="oi-seller-table__right">Net</th></tr></thead><tbody>{earningsData.items.map(item => (
+                                        <tr key={item.id}>
+                                            <td><b>{item.title}</b><small>{item.reference ?? item.orderNumber ?? "—"}</small></td>
+                                            <td><span className={`oi-seller-type oi-seller-type--${item.type}`}>{item.type}</span></td>
+                                            <td>{shortDate(item.date)}</td>
+                                            <td>{item.status}</td>
+                                            <td className="oi-seller-table__right">{formatMoney(item.gross)}</td>
+                                            <td className="oi-seller-table__right">{formatMoney(item.commission)}</td>
+                                            <td className="oi-seller-table__right"><b>{formatMoney(item.net)}</b></td>
+                                        </tr>
+                                    ))}</tbody></table></div>
+                                ) : <div className="oi-seller-dashboard__empty-state"><Icon name="wallet" size={24} /><h3>No transactions yet</h3><p>Completed sales and payouts will appear here.</p></div>}
+                                {earningsData && <Pager pagination={earningsData.pagination} onPage={page => { setTransactionPage(page); void loadEarningsPanel(page); }} />}
+                                <p className="oi-seller-dashboard__hint">Figures come from your shop's own order lines and recorded settlements. <Link href="/seller/pricing" className="oi-link">Review commission plans</Link>.</p>
+                            </>}
+                            {activeTab === "notifications" && <>
+                                <div className="oi-seller-toolbar">
+                                    <div><span className="oi-eyebrow oi-eyebrow--green">NOTIFICATION CENTRE</span><h3 className="oi-seller-toolbar__title">{unreadCount} unread</h3></div>
+                                    <div className="oi-seller-toolbar__controls">
+                                        <label className="oi-seller-check"><input type="checkbox" checked={unreadOnly} onChange={event => { const next = event.target.checked; setUnreadOnly(next); setNotificationPage(1); void loadNotificationsPanel(1, next); }} /> Unread only</label>
+                                        <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={!unreadCount} onClick={() => void readAllNotifications()}>Mark all as read</button>
+                                    </div>
+                                </div>
+                                <div className="oi-seller-notifications">
+                                    {notificationsData?.items.length ? notificationsData.items.map(item => (
+                                        <article key={item.id} className={`oi-seller-notification${item.read ? "" : " is-unread"}`}>
+                                            <div className="oi-seller-notification__icon"><Icon name={notificationIcon(item.type)} size={18} /></div>
+                                            <div className="oi-seller-notification__body">
+                                                <div className="oi-seller-notification__head"><b>{item.title}</b><span>{shortDate(item.createdAt)}</span></div>
+                                                <p>{item.message}</p>
+                                            </div>
+                                            {!item.read && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={() => void readNotification(item.id)}>Mark read</button>}
+                                        </article>
+                                    )) : <div className="oi-seller-dashboard__empty-state"><Icon name="bell" size={24} /><h3>All caught up</h3><p>Order updates, verification news and stock alerts will appear here.</p></div>}
+                                </div>
+                                {notificationsData && <Pager pagination={notificationsData.pagination} onPage={page => { setNotificationPage(page); void loadNotificationsPanel(page); }} />}
                             </>}
                             {activeTab === "subscription" && (
                                 <div className="oi-seller-dashboard__plan">
@@ -791,26 +1251,26 @@ export function SellerSetup() {
                                     <label className="oi-seller-setup__field">Location<input value={settingsDraft.location} onChange={event => setSettingsDraft({ ...settingsDraft, location: event.target.value })} /></label>
                                     <label className="oi-seller-setup__field">Shop introduction<input value={settingsDraft.tagline} onChange={event => setSettingsDraft({ ...settingsDraft, tagline: event.target.value })} /></label>
                                     <label className="oi-seller-setup__field">Shop description<textarea rows={3} value={settingsDraft.description} onChange={event => setSettingsDraft({ ...settingsDraft, description: event.target.value })} /></label>
-                                    <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={saving} onClick={() => void updateShop()}>{saving ? "Saving…" : "Save shop profile"}</button>
-                                    {error && <p role="alert" className="oi-seller-setup__error">{error}</p>}
+                                    <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={saving || !canEditProfile} onClick={() => void updateShop()}>{saving ? "Saving…" : "Save shop profile"}</button>
+                                    {!canEditProfile && <p className="oi-seller-dashboard__hint">Profile editing is unavailable while your shop is restricted.</p>}
 
                                     <div className="oi-seller-dashboard__visibility">
                                         <div>
                                             <h3>Verification & visibility</h3>
                                             <p>
-                                                <b>{setup.verified ? "Verified" : setup.verificationRequestedAt ? "Verification requested" : "Not verified"}</b>
+                                                <b>{shopProfile?.verification.verified ?? setup.verified ? "Verified" : shopProfile?.verification.requestedAt ?? setup.verificationRequestedAt ? "Verification requested" : "Not verified"}</b>
                                                 {" · "}
                                                 <b>{setup.published ? "Published" : "Unpublished"}</b>
                                             </p>
-                                            <small>{setup.verified
-                                                ? setup.status === "Paused"
-                                                    ? "Your shop is paused. Contact an administrator before publishing."
+                                            <small>{(shopProfile?.verification.verified ?? setup.verified)
+                                                ? restrictions?.shopStatus === "SUSPENDED" || setup.status === "Paused"
+                                                    ? "Your shop is suspended. Contact an administrator before publishing."
                                                     : "Publishing makes your shop and eligible products visible in the marketplace."
                                                 : "Admin verification is required before your shop can be published."}</small>
                                         </div>
                                         <div className="oi-seller-dashboard__visibility-actions">
-                                            {!setup.verified && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={saving} onClick={() => void requestVerification()}>{saving ? "Sending…" : "Request verification"}</button>}
-                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={saving || (!setup.published && (!setup.verified || setup.status === "Paused"))} onClick={() => void setPublication(!setup.published)}>{setup.published ? "Unpublish shop" : "Publish shop"}</button>
+                                            {(shopProfile?.verification.canRequest ?? !setup.verified) && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={saving} onClick={() => void requestVerification()}>{saving ? "Sending…" : "Request verification"}</button>}
+                                            <button className="oi-btn oi-btn--primary oi-btn--sm" type="button" disabled={saving || (!setup.published && !canPublish)} onClick={() => void setPublication(!setup.published)}>{setup.published ? "Unpublish shop" : "Publish shop"}</button>
                                         </div>
                                     </div>
 

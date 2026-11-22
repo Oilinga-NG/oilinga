@@ -37,7 +37,9 @@ export type IconName =
     | "lock"
     | "calendar"
     | "filter"
-    | "package";
+    | "package"
+    | "chart"
+    | "bell";
 
 const glyphs: Record<IconName, ReactNode> = {
     search: (
@@ -208,6 +210,18 @@ const glyphs: Record<IconName, ReactNode> = {
         <>
             <path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" />
             <path d="m3 8 9 5 9-5M12 13v8" />
+        </>
+    ),
+    chart: (
+        <>
+            <path d="M4 20V11M10 20V5M16 20v-7M22 20H2" />
+            <path d="m4 9 6-5 6 5" />
+        </>
+    ),
+    bell: (
+        <>
+            <path d="M18 16V10a6 6 0 0 0-12 0v6l-2 3h16l-2-3Z" />
+            <path d="M10 22h4" />
         </>
     ),
 };
