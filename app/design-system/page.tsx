@@ -6,8 +6,14 @@ import { Icon, type IconName } from "@/components/ui/Icon";
 import { SearchField } from "@/components/ui/SearchField";
 import { CategoryGrid } from "@/components/marketplace/CategoryGrid";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
-import { categories } from "@/lib/data";
+import type { Category } from "@/lib/data";
 import { DesignMarketplaceExamples } from "@/components/views/DesignMarketplaceExamples";
+
+// Static fixtures for the component showcase only; live views read database categories.
+const categories: Category[] = [
+    { id: "crude-palm", name: "Palm Oil", caption: "Locally produced palm oil", glyph: "🫙" },
+    { id: "groundnut", name: "Groundnut Oil", caption: "Locally pressed groundnut oil", glyph: "🥜" },
+];
 
 export const metadata: Metadata = {
     title: "Design system",

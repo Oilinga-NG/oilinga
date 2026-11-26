@@ -46,15 +46,36 @@ function normalizeWishlist(data: unknown): WishlistItem[] {
         .filter(item => item.product.slug || item.product.id);
 }
 
-function readWishlist(identity: string): WishlistItem[] {
+/** Local storage keeps only product ids; product details always come from the API. */
+function readWishlistSnapshot(identity: string): string[] {
     if (typeof window === "undefined") return [];
     try {
         const raw = window.localStorage.getItem(snapshotKey(identity))
-            ?? (identity === "guest" ? window.localStorage.getItem("oilinga_wishlist") : null);
+            ?? (identity === "guest" ? window.localStorage.getItem(WISHLIST_KEY) : null);
         if (!raw) return [];
         const parsed: unknown = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        return normalizeWishlist(parsed);
+        return (parsed as Row[]).flatMap(row => {
+            if (typeof row === "string") return [row];
+            if (row && typeof row === "object") {
+                const id = typeof row.productId === "string" ? row.productId
+                    : typeof row.product?.id === "string" ? row.product.id : undefined;
+                return id ? [id] : [];
+            }
+            return [];
+        });
+    } catch {
+        return [];
+    }
+}
+
+async function rehydrateWishlistSnapshot(identity: string): Promise<WishlistItem[]> {
+    const ids = [...new Set(readWishlistSnapshot(identity))];
+    if (!ids.length) return [];
+    try {
+        const data = await apiFetch<{ items?: Row[] }>(`/products/by-ids?ids=${encodeURIComponent(ids.join(","))}`);
+        const rows = Array.isArray(data) ? data : data.items ?? [];
+        return normalizeWishlist(rows);
     } catch {
         return [];
     }
@@ -62,7 +83,10 @@ function readWishlist(identity: string): WishlistItem[] {
 
 function writeWishlist(identity: string, items: WishlistItem[]) {
     try {
-        window.localStorage.setItem(snapshotKey(identity), JSON.stringify(items));
+        const snapshot = items
+            .filter(item => item.product.id)
+            .map(item => ({ productId: item.product.id }));
+        window.localStorage.setItem(snapshotKey(identity), JSON.stringify(snapshot));
     } catch {
         // Storage may be unavailable in private browsing; in-memory state still works.
     }
@@ -71,7 +95,7 @@ function writeWishlist(identity: string, items: WishlistItem[]) {
 function removeSnapshot(identity: string) {
     try {
         window.localStorage.removeItem(snapshotKey(identity));
-        if (identity === "guest") window.localStorage.removeItem("oilinga_wishlist");
+        if (identity === "guest") window.localStorage.removeItem(WISHLIST_KEY);
     } catch {
         // Ignore storage failures.
     }
@@ -92,18 +116,18 @@ export function WishlistProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (!authReady) return;
         let cancelled = false;
-        const identity = user?.id ?? "guest";
 
         async function hydrate() {
             if (!user) {
-                if (!cancelled) commit(readWishlist("guest"));
+                const guestItems = await rehydrateWishlistSnapshot("guest");
+                if (!cancelled) commit(guestItems);
                 return;
             }
             try {
                 const remote = normalizeWishlist(await apiFetch<unknown>("/wishlist"));
                 if (!cancelled) commit(remote);
 
-                const guestItems = readWishlist("guest");
+                const guestItems = await rehydrateWishlistSnapshot("guest");
                 const uploads: Promise<unknown>[] = [];
                 for (const guestItem of guestItems) {
                     if (!guestItem.product.id) continue;
@@ -121,7 +145,8 @@ export function WishlistProvider({ children }: { children: ReactNode }) {
                 }
             } catch (error) {
                 console.error("Wishlist data could not be loaded", error);
-                if (!cancelled) commit(readWishlist(identity));
+                const guestItems = await rehydrateWishlistSnapshot("guest");
+                if (!cancelled) commit(guestItems);
             } finally {
                 if (!cancelled) {
                     loadedFor.current = user?.id ?? null;

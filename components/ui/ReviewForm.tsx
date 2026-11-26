@@ -39,7 +39,7 @@ export function ReviewForm({ productSlug, productName, authorName, targetType = 
 
         setSubmitting(true);
         try {
-            await writeReview({ id: crypto.randomUUID(), targetType, targetId: targetId ?? productSlug, productSlug, productName, rating, text: text.trim(), date: new Date().toISOString(), authorName });
+            await writeReview({ targetType, targetId: targetId ?? productSlug, productSlug, productName, rating, text: text.trim(), authorName });
             notify("Review submitted"); setRating(0); setHovered(0); setText(""); onSubmit?.();
         } catch (submitError) { setError(submitError instanceof Error ? submitError.message : "Could not submit your review."); }
         finally { setSubmitting(false); }

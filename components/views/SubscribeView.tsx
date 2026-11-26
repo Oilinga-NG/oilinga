@@ -3,7 +3,8 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { getPlan, formatPrice, type BillingCycle } from "@/lib/subscription";
+import { findPlan, formatPrice, type BillingCycle } from "@/lib/subscription";
+import { useSubscriptionPlans } from "@/lib/subscription-client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Icon } from "@/components/ui/Icon";
 import { apiFetch } from "@/lib/api-client";
@@ -35,6 +36,7 @@ interface SubscribeViewProps {
 export function SubscribeView({ planId, cycle = "monthly" }: SubscribeViewProps) {
     const router = useRouter();
     const { user, ready } = useAuth();
+    const { plans, loading: plansLoading, error: plansError } = useSubscriptionPlans();
     const [status, setStatus] = useState<Status>("idle");
     const [errorMsg, setErrorMsg] = useState("");
     const [billingCycle, setBillingCycle] = useState<BillingCycle>(
@@ -42,12 +44,12 @@ export function SubscribeView({ planId, cycle = "monthly" }: SubscribeViewProps)
     );
     const paystackLoaded = useRef(false);
 
-    const plan = getPlan(planId);
+    const plan = findPlan(plans, planId);
 
-    // Redirect if plan is invalid
+    // Redirect if the backend catalogue has no such plan
     useEffect(() => {
-        if (!plan) router.replace("/seller/pricing");
-    }, [plan, router]);
+        if (!plansLoading && !plan) router.replace("/seller/pricing");
+    }, [plansLoading, plan, router]);
 
     // Redirect to login if not authenticated
     useEffect(() => {
@@ -66,8 +68,9 @@ export function SubscribeView({ planId, cycle = "monthly" }: SubscribeViewProps)
         paystackLoaded.current = true;
     }, []);
 
-    if (!plan) return null;
-    if (!ready || !user) return <div className="oi-view oi-container"><p className="oi-loading-text">Loading…</p></div>;
+    if (plansLoading || !ready) return <div className="oi-view oi-container"><p className="oi-loading-text">Loading…</p></div>;
+    if (plansError || !plan) return <div className="oi-view oi-container"><p className="oi-auth__error" role="alert">{plansError ?? "Plan not found."}</p></div>;
+    if (!user) return <div className="oi-view oi-container"><p className="oi-loading-text">Loading…</p></div>;
 
     const price = billingCycle === "annual" ? plan.annualPrice : plan.monthlyPrice;
     const totalAmount = billingCycle === "annual" ? price * 12 : price;

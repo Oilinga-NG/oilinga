@@ -18,7 +18,17 @@ export async function reviewsForShop(slug: string): Promise<Review[]> {
     return (await apiFetch<Record<string, unknown>[]>(`/reviews?targetType=SHOP&targetId=${encodeURIComponent(slug)}`)).map(mapReview);
 }
 
-export async function writeReview(review: Review): Promise<Review> {
+export interface ReviewInput {
+    targetType?: "product" | "shop";
+    targetId?: string;
+    productSlug: string;
+    productName: string;
+    rating: number;
+    text: string;
+    authorName: string;
+}
+
+export async function writeReview(review: ReviewInput): Promise<Review> {
     const result = await apiFetch<Record<string, unknown>>("/reviews", { method: "POST", body: JSON.stringify({ targetType: review.targetType === "shop" ? "SHOP" : "PRODUCT", targetId: review.targetId ?? review.productSlug, rating: review.rating, text: review.text }) });
     return mapReview(result) as Review;
 }

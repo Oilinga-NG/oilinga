@@ -12,10 +12,12 @@ import { ShopGrid } from "@/components/marketplace/ShopCard";
 import { RouteSearch } from "@/components/marketplace/RouteSearch";
 import { TrustRow } from "@/components/marketplace/TrustRow";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
+import { formatCount, usePlatformStats } from "@/lib/platform-client";
 import { LoadingState } from "@/components/ui/LoadingState";
 
 export function HomeView() {
     const { products, shops, categories, loading, error } = useMarketplaceData();
+    const { stats } = usePlatformStats();
     const popularSearches = categories.map(category => category.name);
     const featuredProducts = products.slice(0, 4);
     const featuredShops = shops.slice(0, 4);
@@ -51,8 +53,8 @@ export function HomeView() {
                         </ButtonLink>
                     </div>
                     <div className="oi-hero__proof">
-                        <span>✦ Verified local sellers</span>
-                        <span>✦ Secure checkout</span>
+                        <span>✦ {formatCount(stats.verifiedSellers)} verified sellers</span>
+                        <span>✦ {formatCount(stats.activeProducts)} live listings</span>
                     </div>
                 </div>
                 <div className="oi-hero__photo">

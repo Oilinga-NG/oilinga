@@ -1,18 +1,15 @@
+"use client";
+
 import Link from "next/link";
 import { ButtonLink } from "@/components/ui/ButtonLink";
 import { Icon } from "@/components/ui/Icon";
 import { ContactForm } from "@/components/views/ContactForm";
+import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
+import { formatCount, formatNairaCompact, usePlatformStats } from "@/lib/platform-client";
 
 /* --------------------------------------------------------------------------
-   Static data
+   Editorial copy. Domain figures and product examples are read from the API.
    -------------------------------------------------------------------------- */
-
-const stats = [
-    { value: "12,000+", label: "Registered buyers" },
-    { value: "480+", label: "Verified sellers" },
-    { value: "6", label: "Countries served" },
-    { value: "₦2.4bn+", label: "Traded on platform" },
-];
 
 const values = [
     {
@@ -53,28 +50,24 @@ const contacts = [
         title: "Email us",
         detail: "hello@oilinga.com",
         href: "mailto:hello@oilinga.com",
-        label: "Send a message",
     },
     {
         icon: "headset" as const,
         title: "Talk to support",
         detail: "+234 800 OIL ING",
         href: "tel:+2348006454646",
-        label: "Call us",
     },
     {
         icon: "store" as const,
         title: "Seller enquiries",
         detail: "sellers@oilinga.com",
         href: "mailto:sellers@oilinga.com",
-        label: "Get in touch",
     },
     {
         icon: "pin" as const,
         title: "Head office",
         detail: "Lagos, Nigeria",
         href: "https://maps.google.com/?q=Lagos,Nigeria",
-        label: "View on map",
     },
 ];
 
@@ -87,7 +80,7 @@ const steps = [
     {
         num: "02",
         title: "Browse or list products",
-        body: "Buyers explore hundreds of verified listings. Sellers publish their shop and start reaching new customers immediately.",
+        body: "Buyers explore verified listings. Sellers publish their shop and start reaching new customers immediately.",
     },
     {
         num: "03",
@@ -101,13 +94,6 @@ const steps = [
     },
 ];
 
-const team = [
-    { initials: "AO", name: "Amina Okafor", role: "Co-founder & CEO", color: "palm" },
-    { initials: "KM", name: "Kwame Mensah", role: "Co-founder & CTO", color: "kernel" },
-    { initials: "FE", name: "Fatima El-Amin", role: "Head of Seller Success", color: "groundnut" },
-    { initials: "DN", name: "David Nwosu", role: "Head of Logistics", color: "refined" },
-];
-
 const faqs = [
     {
         q: "Is Oilinga free to use as a buyer?",
@@ -115,15 +101,11 @@ const faqs = [
     },
     {
         q: "How do I become a verified seller?",
-        a: "Create a seller account, submit your business details and a government-issued ID. Our team reviews applications within 48 hours.",
-    },
-    {
-        q: "Which countries does Oilinga serve?",
-        a: "We currently operate in Nigeria, Ghana, Côte d'Ivoire, Cameroon, Senegal and Kenya, with more markets launching this year.",
+        a: "Create a seller account, submit your business details and a government-issued ID. Our team reviews applications before your shop goes live.",
     },
     {
         q: "How are payments protected?",
-        a: "Funds are held securely until delivery is confirmed. If a problem arises, our buyer protection policy covers your order.",
+        a: "Payments are verified through Paystack before an order is confirmed. If a problem arises, our buyer protection policy covers your order.",
     },
 ];
 
@@ -132,6 +114,17 @@ const faqs = [
    -------------------------------------------------------------------------- */
 
 export function AboutView() {
+    const { stats: platformStats } = usePlatformStats();
+    const { products } = useMarketplaceData();
+
+    const stats = [
+        { value: formatCount(platformStats.buyers), label: "Registered buyers" },
+        { value: formatCount(platformStats.verifiedSellers), label: "Verified sellers" },
+        { value: formatCount(platformStats.activeProducts), label: "Live product listings" },
+        { value: formatNairaCompact(platformStats.totalTraded), label: "Traded via verified payments" },
+    ];
+    const showcaseProducts = products.slice(0, 3);
+
     return (
         <div className="oi-view oi-container oi-about-page" aria-labelledby="about-title">
 
@@ -195,30 +188,31 @@ export function AboutView() {
                     </ButtonLink>
                 </div>
                 <div className="oi-about-mission__visual">
-                    <div className="oi-about-mission__card oi-about-mission__card--top">
-                        <span className="oi-about-mission__card-icon" aria-hidden="true">🫙</span>
-                        <div>
-                            <strong>Fresh Crude Palm Oil</strong>
-                            <small>Palm Harvest Foods · Lagos</small>
+                    {showcaseProducts.length ? showcaseProducts.map((product, index) => (
+                        <Link
+                            key={product.id ?? product.slug}
+                            href={`/products/${product.slug}`}
+                            className={`oi-about-mission__card oi-about-mission__card--${["top", "mid", "bot"][index]}`}
+                        >
+                            <span className="oi-about-mission__card-icon" aria-hidden="true">{product.glyph}</span>
+                            <div>
+                                <strong>{product.name}</strong>
+                                <small>{product.seller} · {product.origin}</small>
+                            </div>
+                            <span className={`oi-badge ${product.sellerVerified ? "oi-badge--green" : "oi-badge--neutral"}`}>
+                                {product.sellerVerified ? "Verified seller" : product.price}
+                            </span>
+                        </Link>
+                    )) : (
+                        <div className="oi-about-mission__card oi-about-mission__card--top">
+                            <span className="oi-about-mission__card-icon" aria-hidden="true">🫙</span>
+                            <div>
+                                <strong>No listings yet</strong>
+                                <small>Products from verified sellers will appear here.</small>
+                            </div>
+                            <Link href="/marketplace" className="oi-badge oi-badge--neutral">Browse marketplace</Link>
                         </div>
-                        <span className="oi-badge oi-badge--green">Verified</span>
-                    </div>
-                    <div className="oi-about-mission__card oi-about-mission__card--mid">
-                        <span className="oi-about-mission__card-icon" aria-hidden="true">🥜</span>
-                        <div>
-                            <strong>Cold-Pressed Groundnut Oil</strong>
-                            <small>Adeola Farms · Ogun State</small>
-                        </div>
-                        <span className="oi-badge oi-badge--gold">Bestseller</span>
-                    </div>
-                    <div className="oi-about-mission__card oi-about-mission__card--bot">
-                        <span className="oi-about-mission__card-icon" aria-hidden="true">🧴</span>
-                        <div>
-                            <strong>Golden Refined Oil</strong>
-                            <small>Mama Esi Oils · Accra</small>
-                        </div>
-                        <span className="oi-badge oi-badge--neutral">Top rated</span>
-                    </div>
+                    )}
                 </div>
             </section>
 
@@ -257,48 +251,6 @@ export function AboutView() {
                             </span>
                             <h3 className="oi-about-values__title">{v.title}</h3>
                             <p className="oi-about-values__body">{v.body}</p>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            {/* ── Quote / Story pull ─────────────────────────────────────── */}
-            <section className="oi-about-quote oi-section" aria-label="Founder quote">
-                <blockquote className="oi-about-quote__block">
-                    <p>
-                        "We started Oilinga because we watched brilliant producers sell
-                        below their worth every season — not because their product wasn't
-                        good enough, but because they had no easy way to reach the right
-                        buyers. That is the problem we exist to solve."
-                    </p>
-                    <footer>
-                        <cite>
-                            <strong>Amina Okafor</strong>
-                            <span>Co-founder &amp; CEO, Oilinga</span>
-                        </cite>
-                    </footer>
-                </blockquote>
-            </section>
-
-            {/* ── Team ───────────────────────────────────────────────────── */}
-            <section className="oi-about-team oi-section" aria-labelledby="team-title">
-                <div className="oi-section__head">
-                    <div>
-                        <span className="oi-eyebrow oi-eyebrow--green">The people behind Oilinga</span>
-                        <h2 id="team-title" className="oi-section__title">Meet the team</h2>
-                    </div>
-                </div>
-                <div className="oi-about-team__grid">
-                    {team.map((member) => (
-                        <div key={member.name} className="oi-about-team__card">
-                            <span
-                                className={`oi-about-team__avatar oi-shop-card__mark--${member.color}`}
-                                aria-hidden="true"
-                            >
-                                {member.initials}
-                            </span>
-                            <strong className="oi-about-team__name">{member.name}</strong>
-                            <span className="oi-about-team__role">{member.role}</span>
                         </div>
                     ))}
                 </div>
@@ -380,7 +332,7 @@ export function AboutView() {
             <section className="oi-about-cta" aria-labelledby="cta-title">
                 <span className="oi-eyebrow">Ready to get started?</span>
                 <h2 id="cta-title" className="oi-about-cta__title">
-                    Join thousands of buyers and<br />sellers across Africa.
+                    Join buyers and sellers<br />across Africa.
                 </h2>
                 <p className="oi-about-cta__lede">
                     Whether you are looking for quality oils or ready to grow your business,

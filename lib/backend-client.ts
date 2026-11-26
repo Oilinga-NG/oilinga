@@ -1,6 +1,5 @@
 import { apiFetch } from "@/lib/api-client";
 import { mapCategory, mapOrder, mapPaymentRecord, mapProduct, mapRefundRecord, mapReview, mapShop } from "@/lib/backend-mappers";
-import { defaultCategories } from "@/lib/data";
 
 /** Compatibility adapter for the views' established data shapes; all persistence is served by oilinga_BE. */
 export function slugifyShopName(value: string) {
@@ -70,7 +69,7 @@ export async function readBackendData<T>(view: string, params: Record<string, st
             // Attach the mapped listings so mapShop can derive shop categories and
             // specialties consistently with the rest of the compatibility layer.
             shops: shopRows.map(row => mapShop({ ...row, products: products.filter(product => product.shopSlug === row.slug) })),
-            categories: categoryRows.length ? categoryRows.map(mapCategory) : defaultCategories
+            categories: categoryRows.map(mapCategory)
         };
     } else if (view === "product-media") {
         result = await apiFetch(`/products/${encodeURIComponent(params.id ?? "")}/media`);

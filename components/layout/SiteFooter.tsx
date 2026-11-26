@@ -21,20 +21,17 @@ export function SiteFooter() {
                     Building a thriving agricultural marketplace in Africa.
                 </p>
                 <div className="oi-footer__socials">
-                    <a className="oi-footer__social" href="https://facebook.com" aria-label="Oilinga on Facebook">
-                        f
+                    <a className="oi-footer__social" href="mailto:hello@oilinga.com" aria-label="Email Oilinga support">
+                        @
                     </a>
-                    <a className="oi-footer__social" href="https://instagram.com" aria-label="Oilinga on Instagram">
-                        ◎
-                    </a>
-                    <a className="oi-footer__social" href="https://linkedin.com" aria-label="Oilinga on LinkedIn">
-                        in
+                    <a className="oi-footer__social" href="tel:+2348006454646" aria-label="Call Oilinga support">
+                        ☎
                     </a>
                 </div>
             </div>
 
             <div className="oi-container oi-footer__bottom">
-                <span>© 2026 Oilinga. Buy · Sell · Grow.</span>
+                <span>© {new Date().getFullYear()} Oilinga. Buy · Sell · Grow.</span>
                 <nav className="oi-footer__links" aria-label="Footer">
                     {links.map((link) => (
                         <Link key={link.href} href={link.href}>

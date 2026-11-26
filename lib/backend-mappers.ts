@@ -1,4 +1,4 @@
-import { defaultCategories, formatNaira, getCategoryArt, type Category, type Product, type ProductMedia, type Shop } from "@/lib/data";
+import { formatNaira, getCategoryArt, type Category, type Product, type ProductMedia, type Shop } from "@/lib/data";
 import type {
     CustomerOrder,
     OrderEvent,
@@ -9,12 +9,10 @@ import type {
     PaymentRefundRecord,
     RefundRecordStatus
 } from "@/lib/types";
-import type { PlanId } from "@/lib/subscription";
-
 type Row = Record<string, any>;
 
 /** Backend shop records may use "FREE", "Starter" or a canonical plan id. */
-export function normalizePlanId(value: unknown): PlanId {
+export function normalizePlanId(value: unknown): string {
     const plan = String(value ?? "").toLowerCase().trim();
     if (plan === "growth") return "growth";
     if (plan === "pro") return "pro";
@@ -45,7 +43,7 @@ export function mapProduct(row: Row): Product {
     const rawPrice = row.priceValue ?? row.unitPrice ?? row.price ?? 0;
     const priceValue = toNumber(rawPrice);
     const shop = row.shop ?? {};
-    const category = row.categoryId ?? row.category?.id ?? row.category ?? defaultCategories[0].id;
+    const category = String(row.categoryId ?? row.category?.id ?? row.category ?? "");
     const slug = row.slug ?? String(row.id ?? "");
     const media: ProductMedia[] = Array.isArray(row.media)
         ? row.media.map((item: Row) => ({

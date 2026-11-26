@@ -94,7 +94,13 @@ function normalizeSummary(data: unknown): { items: CartItem[]; subtotal: number 
     return { items: [], subtotal: 0 };
 }
 
-function readCart(identity: string): CartItem[] {
+interface CartSnapshotItem {
+    productId?: string;
+    quantity: number;
+}
+
+/** Local storage keeps only product ids and quantities; product details always come from the API. */
+function readCartSnapshot(identity: string): CartSnapshotItem[] {
     if (typeof window === "undefined") return [];
     try {
         const raw = window.localStorage.getItem(snapshotKey(identity))
@@ -102,9 +108,30 @@ function readCart(identity: string): CartItem[] {
         if (!raw) return [];
         const parsed: unknown = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        return (parsed as CartItem[])
-            .filter(item => item && item.product && Number(item.quantity) > 0)
-            .map(item => withQuantity(item, Math.floor(Number(item.quantity))));
+        return (parsed as Row[]).flatMap((row): CartSnapshotItem[] => {
+            if (!row || typeof row !== "object") return [];
+            const productId = typeof row.productId === "string" ? row.productId
+                : typeof row.product?.id === "string" ? row.product.id : undefined;
+            const quantity = Math.floor(Number(row.quantity));
+            return productId && quantity > 0 ? [{ productId, quantity }] : [];
+        });
+    } catch {
+        return [];
+    }
+}
+
+async function rehydrateCartSnapshot(identity: string): Promise<CartItem[]> {
+    const snapshot = readCartSnapshot(identity);
+    const ids = [...new Set(snapshot.map(item => item.productId).filter((id): id is string => Boolean(id)))];
+    if (!ids.length) return [];
+    try {
+        const data = await apiFetch<{ items?: Row[] }>(`/products/by-ids?ids=${encodeURIComponent(ids.join(","))}`);
+        const rows = Array.isArray(data) ? data : data.items ?? [];
+        const products = new Map(rows.map(row => [String(row.id), mapProduct(row)]));
+        return snapshot.flatMap(item => {
+            const product = products.get(item.productId!);
+            return product ? [withQuantity({ product, quantity: item.quantity }, item.quantity)] : [];
+        });
     } catch {
         return [];
     }
@@ -112,7 +139,10 @@ function readCart(identity: string): CartItem[] {
 
 function writeCart(identity: string, items: CartItem[]) {
     try {
-        window.localStorage.setItem(snapshotKey(identity), JSON.stringify(items));
+        const snapshot = items
+            .filter(item => item.product.id)
+            .map(item => ({ productId: item.product.id, quantity: item.quantity }));
+        window.localStorage.setItem(snapshotKey(identity), JSON.stringify(snapshot));
     } catch {
         // Storage may be unavailable in private browsing; in-memory state still works.
     }
@@ -144,11 +174,11 @@ export function CartProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (!authReady) return;
         let cancelled = false;
-        const identity = user?.id ?? "guest";
 
         async function hydrate() {
             if (!user) {
-                if (!cancelled) commit(readCart("guest"), null);
+                const guestItems = await rehydrateCartSnapshot("guest");
+                if (!cancelled) commit(guestItems, null);
                 return;
             }
             try {
@@ -156,7 +186,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
                 const server = normalizeSummary(data);
                 if (!cancelled) commit(server.items, server.subtotal);
 
-                const guestItems = readCart("guest");
+                const guestItems = await rehydrateCartSnapshot("guest");
                 if (guestItems.length) {
                     const merged = [...server.items];
                     const uploads: Promise<unknown>[] = [];
@@ -187,7 +217,8 @@ export function CartProvider({ children }: { children: ReactNode }) {
                 }
             } catch (error) {
                 console.error("Cart data could not be loaded", error);
-                if (!cancelled) commit(readCart(identity), null);
+                const guestItems = await rehydrateCartSnapshot("guest");
+                if (!cancelled) commit(guestItems, null);
             } finally {
                 if (!cancelled) {
                     loadedFor.current = user?.id ?? null;

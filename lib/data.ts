@@ -66,34 +66,14 @@ export interface Category {
     glyph: string;
 }
 
-export interface TrustSignal { title: string; caption: string; icon: IconName; }
 export interface SellerNavItem { label: string; icon: IconName; }
 export interface Metric { label: string; value: string; trend: string; up?: boolean; }
 export interface Order { id: string; customer: string; date: string; amount: string; status: string; }
 
-// Initial taxonomy. Admin-created categories are stored in the shared database.
-export const defaultCategories: Category[] = [
-    { id: "crude-palm", name: "Palm Oil", caption: "Locally produced palm oil", glyph: "🫙" },
-    { id: "groundnut", name: "Groundnut Oil", caption: "Locally pressed groundnut oil", glyph: "🥜" },
-];
-
-export const trustSignals: TrustSignal[] = [
-    { icon: "shield", title: "Secure transactions", caption: "Protected checkout" },
-    { icon: "truck", title: "Fast & reliable delivery", caption: "From trusted sellers" },
-    { icon: "leaf", title: "Trusted community", caption: "Verified businesses" },
-    { icon: "headset", title: "Dedicated support", caption: "Here when you need us" },
-];
-
-export const categories = defaultCategories;
-export const popularSearches = defaultCategories.map(category => category.name);
-export function getCategory(id: string) { return defaultCategories.find(category => category.id === id); }
-export function getCategoryName(id: string) { return getCategory(id)?.name ?? "Oils"; }
+/** Visual treatment only; category names, ids and glyphs come from the database. */
 export function getCategoryArt(category: ProductCategory): ProductArt {
-    if (category === "groundnut") return "groundnut";
-    return "palm";
-}
-export function getCategoryGlyph(category: ProductCategory) {
-    return defaultCategories.find(item => item.id === category)?.glyph ?? "🫙";
+    const value = String(category ?? "").toLowerCase();
+    return value.includes("groundnut") || value.includes("peanut") ? "groundnut" : "palm";
 }
 export function formatNaira(value: number) { return `₦${value.toLocaleString("en-NG")}`; }
 

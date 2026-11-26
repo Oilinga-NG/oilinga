@@ -11,7 +11,6 @@ export type {
     Shop,
     Product,
     Category,
-    TrustSignal,
     SellerNavItem,
     Metric,
     Order,

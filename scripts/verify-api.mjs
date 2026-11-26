@@ -39,6 +39,18 @@ const checks = [
   {
     path: "/reviews?targetType=PRODUCT&limit=1",
     validate: payload => payload?.success === true && (Array.isArray(payload?.data?.items) || Array.isArray(payload?.data))
+  },
+  {
+    path: "/subscriptions/plans",
+    validate: payload => payload?.success === true && Array.isArray(payload?.data) && payload.data.length > 0 && payload.data.every(plan => typeof plan.monthlyPrice === "number")
+  },
+  {
+    path: "/platform/stats",
+    validate: payload => payload?.success === true && typeof payload?.data?.buyers === "number" && typeof payload?.data?.totalTraded === "number"
+  },
+  {
+    path: "/products/by-ids?ids=",
+    validate: payload => payload?.success === true && Array.isArray(payload?.data?.items)
   }
 ];
 

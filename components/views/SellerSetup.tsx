@@ -13,7 +13,8 @@ import type { Category, ProductCategory, ProductMedia } from "@/lib/data";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
 import { LoadingState } from "@/components/ui/LoadingState";
-import { PLANS, getPlan, type BillingCycle } from "@/lib/subscription";
+import { findPlan, formatCommissionRates, type BillingCycle } from "@/lib/subscription";
+import { useSubscriptionPlans } from "@/lib/subscription-client";
 import { PlanCard } from "@/components/ui/PlanCard";
 
 type ListingStatus = "Active" | "Draft" | "Out of stock";
@@ -383,6 +384,7 @@ export function SellerSetup() {
     const userId = user?.id;
     const userRole = user?.role;
     const { refresh: refreshMarketplace, categories } = useMarketplaceData();
+    const { plans } = useSubscriptionPlans();
     const [setup, setSetup] = useState<ShopSetup | null>(null);
     const [stage, setStage] = useState<Stage>("landing");
     const [loaded, setLoaded] = useState(false);
@@ -969,7 +971,7 @@ export function SellerSetup() {
                     </div>
 
                     <div className="oi-pricing-grid">
-                        {PLANS.map((plan) => (
+                        {plans.map((plan) => (
                             <PlanCard
                                 key={plan.id}
                                 plan={plan}
@@ -983,7 +985,7 @@ export function SellerSetup() {
 
                     <div className="oi-pricing-commission">
                         <Icon name="shield" size={18} />
-                        <p>Commission: <strong>Starter 4% · Growth 2.5% · Pro 1.5%</strong>. Deducted before settlement.</p>
+                        <p>Commission: <strong>{formatCommissionRates(plans)}</strong>. Deducted before settlement.</p>
                     </div>
                 </section>
 
@@ -1025,9 +1027,9 @@ export function SellerSetup() {
     }
 
     if (stage === "products" && setup) {
-        const currentPlan = getPlan(setup.plan);
-        const limit = currentPlan?.listingLimit ?? 5;
-        const atLimit = limit !== -1 && setup.products.length >= limit;
+        const currentPlan = findPlan(plans, setup.plan);
+        const limit = currentPlan?.listingLimit ?? Number.POSITIVE_INFINITY;
+        const atLimit = Number.isFinite(limit) && limit !== -1 && setup.products.length >= limit;
         return (
             <section className="oi-view oi-container oi-seller-setup">
                 <div className="oi-seller-setup__card">
@@ -1091,9 +1093,9 @@ export function SellerSetup() {
         const lowStockItems = inventoryData?.items.filter(item => item.lowStock) ?? [];
         const tabTitle = workspaceTabs.find(tab => tab.id === activeTab)?.label ?? "Overview";
         const shopSlug = setup.slug ?? slugifyShopName(setup.shop);
-        const currentPlan = getPlan(setup.plan);
-        const limit = currentPlan?.listingLimit ?? 5;
-        const atLimit = limit !== -1 && setup.products.length >= limit;
+        const currentPlan = findPlan(plans, setup.plan);
+        const limit = currentPlan?.listingLimit ?? Number.POSITIVE_INFINITY;
+        const atLimit = Number.isFinite(limit) && limit !== -1 && setup.products.length >= limit;
         return (
             <section className="oi-view oi-container oi-seller-dashboard">
                 <div className="oi-dashboard">
@@ -1359,8 +1361,8 @@ export function SellerSetup() {
                                     <div className="oi-seller-upgrade-banner oi-seller-upgrade-banner--neutral">
                                         <Icon name="sparkle" size={18} />
                                         <div>
-                                            <strong>You are on the {currentPlan?.name ?? "Starter"} plan</strong>
-                                            <span>{setup.subscriptionStatus} · {currentPlan?.commission ?? 4}% commission · {limit === -1 ? "Unlimited" : limit} product{limit !== 1 ? "s" : ""}</span>
+                                            <strong>{currentPlan ? `You are on the ${currentPlan.name} plan` : "Plan details are unavailable"}</strong>
+                                            <span>{currentPlan ? `${setup.subscriptionStatus} · ${currentPlan.commission}% commission · ${currentPlan.listingLimit === -1 ? "Unlimited" : currentPlan.listingLimit} products` : "Refresh to load plan details from the backend."}</span>
                                         </div>
                                         <Link href="/seller/subscription" className="oi-btn oi-btn--outline oi-btn--sm">Manage subscription</Link>
                                     </div>

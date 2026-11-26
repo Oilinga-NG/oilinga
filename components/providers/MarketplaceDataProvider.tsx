@@ -4,15 +4,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { apiFetch } from "@/lib/api-client";
 import { readBackendData } from "@/lib/backend-client";
 import { mapProduct } from "@/lib/backend-mappers";
-import { defaultCategories, type Category, type Product, type Shop } from "@/lib/data";
+import type { Category, Product, Shop } from "@/lib/data";
 
 interface MarketplaceData { products: Product[]; shops: Shop[]; categories: Category[]; loading: boolean; error: string | null; refresh: () => Promise<void>; }
-const MarketplaceContext = createContext<MarketplaceData>({ products: [], shops: [], categories: defaultCategories, loading: true, error: null, refresh: async () => {} });
+const MarketplaceContext = createContext<MarketplaceData>({ products: [], shops: [], categories: [], loading: true, error: null, refresh: async () => {} });
 
 export function MarketplaceDataProvider({ children }: { children: ReactNode }) {
     const [products, setProducts] = useState<Product[]>([]);
     const [shops, setShops] = useState<Shop[]>([]);
-    const [categories, setCategories] = useState<Category[]>(defaultCategories);
+    const [categories, setCategories] = useState<Category[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const refresh = useCallback(async () => {
@@ -24,7 +24,7 @@ export function MarketplaceDataProvider({ children }: { children: ReactNode }) {
             const data = await readBackendData<{ products: Product[]; shops: Shop[]; categories: Category[] }>("marketplace");
             setProducts(data.products);
             setShops(data.shops);
-            setCategories(data.categories.length ? data.categories : defaultCategories);
+            setCategories(data.categories);
         } catch (requestError) {
             setError(requestError instanceof Error ? requestError.message : "Marketplace data could not be loaded.");
         } finally { setLoading(false); }

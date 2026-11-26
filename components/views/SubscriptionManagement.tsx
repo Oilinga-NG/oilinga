@@ -3,14 +3,15 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { PLANS, getPlan, formatPrice, type PlanId } from "@/lib/subscription";
+import { formatPrice } from "@/lib/subscription";
+import { useSubscriptionPlans } from "@/lib/subscription-client";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api-client";
 import { Icon } from "@/components/ui/Icon";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
 
 interface SubData {
-    plan: PlanId;
+    plan: string;
     subscriptionStatus: "Active" | "Paused" | "Cancelled";
     billingCycle: "monthly" | "annual" | null;
     nextBillingDate: string | null;
@@ -36,6 +37,7 @@ export function SubscriptionManagement() {
     const { user, ready, refreshUser } = useAuth();
     const router = useRouter();
     const { refresh: refreshMarketplace } = useMarketplaceData();
+    const { plans, loading: plansLoading } = useSubscriptionPlans();
     const [sub, setSub] = useState<SubData | null>(null);
     const [billing, setBilling] = useState<BillingRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -99,7 +101,7 @@ export function SubscriptionManagement() {
         }
     }
 
-    if (!ready || loading) {
+    if (!ready || loading || plansLoading) {
         return <div className="oi-view oi-container"><p className="oi-loading-text">Loading subscription…</p></div>;
     }
 
@@ -111,8 +113,9 @@ export function SubscriptionManagement() {
         );
     }
 
-    const plan = sub ? getPlan(sub.plan) : PLANS[0];
-    const nextPlan = plan ? PLANS[PLANS.indexOf(plan) + 1] : null;
+    const planIndex = plans.findIndex(plan => plan.id === sub?.plan);
+    const plan = planIndex >= 0 ? plans[planIndex] : undefined;
+    const nextPlan = planIndex >= 0 ? plans[planIndex + 1] : undefined;
     const expired = isExpired(sub);
     const isCancelled = sub?.subscriptionStatus === "Cancelled";
 
@@ -154,25 +157,25 @@ export function SubscriptionManagement() {
                 <div className="oi-sub-mgmt-card__head">
                     <div>
                         <span className="oi-eyebrow oi-eyebrow--green">Current plan</span>
-                        <h2 className="oi-sub-mgmt-card__plan">{plan?.name ?? "Starter"}</h2>
+                        <h2 className="oi-sub-mgmt-card__plan">{plan?.name ?? "Plan unavailable"}</h2>
                         <p className="oi-sub-mgmt-card__tagline">{plan?.tagline}</p>
                     </div>
                     <span className={`oi-badge ${sub?.subscriptionStatus === "Active" ? "oi-badge--delivered"
                         : sub?.subscriptionStatus === "Cancelled" ? "oi-badge--red"
                             : "oi-badge--pending"
                         }`}>
-                        {sub?.subscriptionStatus ?? "Active"}
+                        {sub?.subscriptionStatus ?? "Unknown"}
                     </span>
                 </div>
 
                 <dl className="oi-sub-mgmt-card__meta">
                     <div>
                         <dt>Commission rate</dt>
-                        <dd>{plan?.commission ?? 4}%</dd>
+                        <dd>{plan ? `${plan.commission}%` : "—"}</dd>
                     </div>
                     <div>
                         <dt>Product limit</dt>
-                        <dd>{plan?.listingLimit === -1 ? "Unlimited" : plan?.listingLimit ?? 5}</dd>
+                        <dd>{plan ? (plan.listingLimit === -1 ? "Unlimited" : plan.listingLimit) : "—"}</dd>
                     </div>
                     {sub?.billingCycle && (
                         <div>

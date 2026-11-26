@@ -77,3 +77,46 @@ describe("readBackendData product media view", () => {
         expect(apiFetch).toHaveBeenCalledWith("/products/p1/media");
     });
 });
+
+describe("readBackendData marketplace categories", () => {
+    const dbCategories = [
+        { id: "db-palm", name: "Database Palm Oil", caption: "Stored in Postgres", glyph: "🫙" },
+        { id: "db-shea", name: "Database Shea Oil", caption: "Stored in Postgres", glyph: "🌿" },
+    ];
+
+    function mockMarketplace(categories: unknown[], products: unknown[] = []) {
+        apiFetch.mockImplementation(async (url: string) => {
+            if (url === "/products?limit=100") return { items: products };
+            if (url === "/shops") return [{ id: "s1", slug: "shop-1", name: "Shop One" }];
+            if (url === "/products/categories") return categories;
+            throw new Error(`Unexpected API call: ${url}`);
+        });
+    }
+
+    it("uses database categories and derives shop categories from database products", async () => {
+        mockMarketplace(dbCategories, [{
+            id: "p1",
+            slug: "p1",
+            name: "Test oil",
+            price: "1000",
+            shop: { slug: "shop-1", name: "Shop One" },
+            category: { id: "db-palm", name: "Database Palm Oil", glyph: "🫙" },
+        }]);
+
+        const result = await readBackendData<{
+            categories: { id: string; name: string }[];
+            shops: { categories: string[] }[];
+        }>("marketplace");
+
+        expect(result.categories).toEqual(dbCategories);
+        expect(result.shops[0].categories).toEqual(["db-palm"]);
+    });
+
+    it("keeps an empty category list when the database has no categories", async () => {
+        mockMarketplace([]);
+
+        const result = await readBackendData<{ categories: unknown[] }>("marketplace");
+
+        expect(result.categories).toEqual([]);
+    });
+});
