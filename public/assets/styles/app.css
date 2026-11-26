@@ -5392,6 +5392,58 @@
     gap: 8px;
 }
 
+.oi-admin__plan-form {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: end;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+}
+
+.oi-admin__plan-form label {
+    display: grid;
+    gap: 5px;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+}
+
+.oi-admin__plan-form input,
+.oi-admin__plan-form textarea {
+    width: 100%;
+    min-height: 38px;
+    padding: 6px 9px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font: inherit;
+}
+
+.oi-admin__plan-form textarea {
+    resize: vertical;
+}
+
+.oi-admin__plan-form label small {
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+}
+
+.oi-admin__plan-form .oi-admin__plan-field--wide {
+    grid-column: span 3;
+}
+
+.oi-admin__plan-form .oi-admin__plan-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+}
+
+.oi-admin__plan-form .oi-admin__plan-toggle input {
+    width: auto;
+    min-height: auto;
+}
+
 .oi-admin__pagination {
     display: flex;
     align-items: center;
@@ -5542,8 +5594,13 @@
         grid-template-columns: 1fr;
     }
 
-    .oi-admin__subscription-form {
+    .oi-admin__subscription-form,
+    .oi-admin__plan-form {
         grid-template-columns: 1fr;
+    }
+
+    .oi-admin__plan-form .oi-admin__plan-field--wide {
+        grid-column: auto;
     }
 
     .oi-admin__filters,

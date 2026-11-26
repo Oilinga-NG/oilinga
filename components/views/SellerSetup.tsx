@@ -965,7 +965,7 @@ export function SellerSetup() {
                                 onClick={() => setLandingCycle("annual")}
                             >
                                 Annual
-                                <span className="oi-pricing-toggle__save">Save 2 months</span>
+                                <span className="oi-pricing-toggle__save">{plans.some(plan => plan.monthlyPrice > 0 && plan.annualPrice < plan.monthlyPrice) ? "Save with annual" : "Annual"}</span>
                             </button>
                         </div>
                     </div>

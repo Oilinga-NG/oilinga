@@ -26,7 +26,9 @@ export function SubscriptionPricing() {
     }
 
     const paidPlans = plans.filter(plan => plan.monthlyPrice > 0);
-    const annualSavings = paidPlans.map(plan => `${plan.name} ${formatPrice(annualSaving(plan))}`).join(", ");
+    const freePlan = plans.find(plan => plan.monthlyPrice === 0);
+    const annualDiscountPlans = paidPlans.filter(plan => plan.annualPrice < plan.monthlyPrice);
+    const annualSavings = annualDiscountPlans.map(plan => `${plan.name} ${formatPrice(annualSaving(plan))}`).join(", ");
     const faqs = [
         {
             q: "Can I change my plan at any time?",
@@ -34,7 +36,7 @@ export function SubscriptionPricing() {
         },
         {
             q: "What happens when I cancel?",
-            a: "Your shop stays active on the Starter (free) plan. You keep all your existing orders and data. Product listings above the Starter limit are automatically paused.",
+            a: `Your shop stays active on the ${freePlan?.name ?? "free"} plan. You keep all your existing orders and data. Product limits follow the plan shown in the catalogue.`,
         },
         {
             q: "How is commission calculated?",
@@ -43,7 +45,7 @@ export function SubscriptionPricing() {
         {
             q: "Is annual billing worth it?",
             a: paidPlans.length
-                ? `Annual billing saves you the equivalent of 2 months — ${annualSavings} per year. Payment is taken upfront for the full year.`
+                ? `Annual rates are shown per month on each card and billed upfront for the full year. Current savings: ${annualSavings}.`
                 : "Annual billing is not currently available.",
         },
         {
@@ -79,7 +81,7 @@ export function SubscriptionPricing() {
                         onClick={() => setCycle("annual")}
                     >
                         Annual
-                        <span className="oi-pricing-toggle__save">Save 2 months</span>
+                        <span className="oi-pricing-toggle__save">{annualDiscountPlans.length ? "Save with annual" : "Annual"}</span>
                     </button>
                 </div>
             </div>

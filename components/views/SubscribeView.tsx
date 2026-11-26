@@ -193,7 +193,7 @@ export function SubscribeView({ planId, cycle = "monthly" }: SubscribeViewProps)
                                 onClick={() => setBillingCycle("annual")}
                             >
                                 Annual
-                                <span>{formatPrice(plan.annualPrice)}/mo · 2 months free</span>
+                                <span>{formatPrice(plan.annualPrice)}/mo · billed yearly</span>
                             </button>
                         </div>
                     )}

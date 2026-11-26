@@ -76,7 +76,7 @@ export function SubscriptionManagement() {
             setSub((prev) => prev
                 ? { ...prev, plan: "starter", subscriptionStatus: "Cancelled", billingCycle: null, nextBillingDate: null }
                 : prev);
-            notify("Subscription cancelled. Your shop is now on the Starter plan.");
+            notify(`Subscription cancelled. Your shop is now on the ${fallbackPlan?.name ?? "default"} plan.`);
         } catch (err) {
             notify(err instanceof Error ? err.message : "Could not cancel subscription.");
         } finally {
@@ -113,6 +113,7 @@ export function SubscriptionManagement() {
         );
     }
 
+    const fallbackPlan = plans.find(plan => plan.id === "starter") ?? plans.find(plan => plan.monthlyPrice === 0) ?? plans[0];
     const planIndex = plans.findIndex(plan => plan.id === sub?.plan);
     const plan = planIndex >= 0 ? plans[planIndex] : undefined;
     const nextPlan = planIndex >= 0 ? plans[planIndex + 1] : undefined;
@@ -141,7 +142,7 @@ export function SubscriptionManagement() {
                         </strong>
                         <span>
                             {isCancelled
-                                ? "Your shop is now on the free Starter plan. Some product listings may have been paused."
+                                ? `Your shop is now on the ${fallbackPlan?.name ?? "default"} plan. Some product listings may have been paused.`
                                 : "Renew to restore full access to your shop features and product listings."}
                         </span>
                     </div>
@@ -299,8 +300,8 @@ export function SubscriptionManagement() {
                     <div className="oi-modal">
                         <h2 id="cancel-modal-title">Cancel subscription?</h2>
                         <p>
-                            Your shop will move to the <strong>Starter (free)</strong> plan immediately.
-                            Product listings above the 5-listing limit will be paused.
+                            Your shop will move to the <strong>{fallbackPlan?.name ?? "default"}</strong> plan immediately.
+                            {fallbackPlan && fallbackPlan.listingLimit >= 0 && <> Product listings above the {fallbackPlan.listingLimit}-listing limit will be paused.</>}
                         </p>
                         <div className="oi-modal__actions">
                             <button type="button" className="oi-btn oi-btn--danger" onClick={cancelSubscription} disabled={working}>

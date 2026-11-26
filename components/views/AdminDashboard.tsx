@@ -16,7 +16,7 @@ import { apiFetch } from "@/lib/api-client";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
 import type { Category } from "@/lib/data";
-import type { Plan } from "@/lib/subscription";
+import type { Plan, PlanFeature } from "@/lib/subscription";
 
 type ModerationStatus = "NONE" | "PENDING" | "APPROVED" | "REJECTED";
 type VerificationStatus = "UNREQUESTED" | "PENDING" | "APPROVED" | "REJECTED";
@@ -145,7 +145,25 @@ type AuditItem = {
 };
 type Paginated<T> = { items: T[]; pagination: { page: number; limit: number; total: number; pages: number } };
 type UserPermissionView = { userId: string; role: string; permissions: AdminPermissions };
-type SubscriptionPlanId = "starter" | "growth" | "pro";
+type AdminPlan = Plan & {
+    active: boolean;
+    sortOrder: number;
+    createdAt: string;
+    updatedAt: string;
+};
+type AdminPlanDraft = {
+    id: string;
+    name: string;
+    tagline: string;
+    monthlyPrice: string;
+    annualPrice: string;
+    commission: string;
+    listingLimit: string;
+    sortOrder: string;
+    features: string;
+    featured: boolean;
+    active: boolean;
+};
 type BillingCycle = "monthly" | "annual";
 type AdminSubscription = {
     id: string;
@@ -171,7 +189,7 @@ type SubscriptionUser = {
 type SubscriptionDraft = {
     userId: string;
     shopId: string;
-    plan: SubscriptionPlanId;
+    plan: string;
     subscriptionStatus: SubscriptionStatus;
     billingCycle: BillingCycle;
     nextBillingDate: string;
@@ -202,6 +220,40 @@ function money(value: number) { return `₦${value.toLocaleString("en-NG", { max
 function formatSubscriptionDate(value: string | null) {
     return value ? new Date(value).toLocaleDateString() : "—";
 }
+
+function planFeaturesToText(features: PlanFeature[]) {
+    return features.map(feature => `${feature.included ? "+" : "-"} ${feature.text}`).join("\n");
+}
+
+function parsePlanFeatures(value: string): PlanFeature[] {
+    return value.split("\n")
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => ({
+            text: line.replace(/^[+-]\s*/, "").trim(),
+            included: !line.startsWith("-")
+        }))
+        .filter(feature => feature.text.length > 0);
+}
+
+function numericInput(value: string, fallback = 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const emptyPlanDraft: AdminPlanDraft = {
+    id: "",
+    name: "",
+    tagline: "",
+    monthlyPrice: "0",
+    annualPrice: "0",
+    commission: "0",
+    listingLimit: "0",
+    sortOrder: "0",
+    features: "",
+    featured: false,
+    active: true
+};
 
 const emptySubscriptionDraft: SubscriptionDraft = {
     userId: "",
@@ -285,9 +337,14 @@ export function AdminDashboard() {
     const [subscriptionPage, setSubscriptionPage] = useState(1);
     const [subscriptionUsers, setSubscriptionUsers] = useState<SubscriptionUser[]>([]);
     const [subscriptionPlans, setSubscriptionPlans] = useState<Plan[]>([]);
+    const [adminPlans, setAdminPlans] = useState<AdminPlan[]>([]);
     const [subscriptionDraft, setSubscriptionDraft] = useState<SubscriptionDraft>(emptySubscriptionDraft);
     const [editingSubscriptionId, setEditingSubscriptionId] = useState("");
     const [subscriptionFormError, setSubscriptionFormError] = useState("");
+    const [planDraft, setPlanDraft] = useState<AdminPlanDraft>(emptyPlanDraft);
+    const [editingPlanId, setEditingPlanId] = useState("");
+    const [planFormError, setPlanFormError] = useState("");
+    const [planBusy, setPlanBusy] = useState("");
 
     const loadAdminData = useCallback(async () => {
         const data = await readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; paymentRecords: PaymentRecord[]; refundRecords: PaymentRefundRecord[]; settlements: Settlement[]; settings: { commissionRate: number } }>("admin");
@@ -360,6 +417,10 @@ export function AdminDashboard() {
 
     const loadSubscriptionPlans = useCallback(async () => {
         setSubscriptionPlans(await apiFetch<Plan[]>("/subscriptions/plans"));
+    }, []);
+
+    const loadAdminPlans = useCallback(async () => {
+        setAdminPlans(await apiFetch<AdminPlan[]>("/admin/plans"));
     }, []);
 
     useEffect(() => {
@@ -446,11 +507,11 @@ export function AdminDashboard() {
     useEffect(() => {
         if (!authReady || user?.role !== "admin" || tab !== "subscriptions") return;
         let cancelled = false;
-        void Promise.all([loadSubscriptionUsers(), loadSubscriptionPlans()]).catch(error => {
+        void Promise.all([loadSubscriptionUsers(), loadSubscriptionPlans(), loadAdminPlans()]).catch(error => {
             if (!cancelled) setAdminError(error instanceof Error ? error.message : "Could not load subscription options.");
         });
         return () => { cancelled = true; };
-    }, [authReady, user, tab, loadSubscriptionUsers, loadSubscriptionPlans]);
+    }, [authReady, user, tab, loadSubscriptionUsers, loadSubscriptionPlans, loadAdminPlans]);
 
     const editingSubscription = subscriptions.find(item => item.shopId === editingSubscriptionId) ?? null;
     const selectedSubscriptionUser = subscriptionUsers.find(item => item.id === subscriptionDraft.userId) ?? null;
@@ -460,6 +521,97 @@ export function AdminDashboard() {
     const selectedSubscriptionPlan = subscriptionPlans.find(plan => plan.id === subscriptionDraft.plan) ?? null;
     const subscriptionReadOnly = !permissions.canModerate || Boolean(subscriptionBusy);
     const canSaveSubscription = permissions.canModerate && !subscriptionBusy && (Boolean(editingSubscriptionId) || subscriptionShopOptions.length > 0);
+    const planReadOnly = !permissions.canModerate || Boolean(planBusy);
+    const canSavePlan = permissions.canModerate && !planBusy && Boolean(planDraft.name.trim());
+
+    function beginPlanCreate() {
+        setEditingPlanId("");
+        setPlanDraft(emptyPlanDraft);
+        setPlanFormError("");
+    }
+
+    function beginPlanEdit(plan: AdminPlan) {
+        setEditingPlanId(plan.id);
+        setPlanDraft({
+            id: plan.id,
+            name: plan.name,
+            tagline: plan.tagline,
+            monthlyPrice: String(plan.monthlyPrice),
+            annualPrice: String(plan.annualPrice),
+            commission: String(plan.commission),
+            listingLimit: String(plan.listingLimit),
+            sortOrder: String(plan.sortOrder),
+            features: planFeaturesToText(plan.features),
+            featured: plan.featured,
+            active: plan.active
+        });
+        setPlanFormError("");
+    }
+
+    async function savePlan(event: FormEvent) {
+        event.preventDefault();
+        if (!permissions.canModerate || planBusy) return;
+        const monthlyPrice = numericInput(planDraft.monthlyPrice);
+        const annualPrice = numericInput(planDraft.annualPrice);
+        const commission = numericInput(planDraft.commission);
+        const listingLimit = numericInput(planDraft.listingLimit);
+        const sortOrder = numericInput(planDraft.sortOrder);
+        if (monthlyPrice < 0 || annualPrice < 0 || commission < 0 || commission > 100 || listingLimit < -1 || sortOrder < 0) {
+            setPlanFormError("Enter valid prices, commission (0–100), listing limit (-1 for unlimited) and sort order.");
+            return;
+        }
+        const payload = {
+            ...(!editingPlanId && planDraft.id.trim() ? { id: planDraft.id.trim() } : {}),
+            name: planDraft.name.trim(),
+            tagline: planDraft.tagline.trim(),
+            monthlyPrice,
+            annualPrice,
+            commission,
+            listingLimit: Math.trunc(listingLimit),
+            sortOrder: Math.trunc(sortOrder),
+            featured: planDraft.featured,
+            active: planDraft.active,
+            features: parsePlanFeatures(planDraft.features)
+        };
+        setPlanBusy(editingPlanId || "create");
+        setPlanFormError("");
+        try {
+            if (editingPlanId) {
+                await apiFetch<AdminPlan>(`/admin/plans/${encodeURIComponent(editingPlanId)}`, {
+                    method: "PATCH",
+                    body: JSON.stringify(payload)
+                });
+            } else {
+                await apiFetch<AdminPlan>("/admin/plans", {
+                    method: "POST",
+                    body: JSON.stringify(payload)
+                });
+            }
+            setAdminError("");
+            setAdminNotice(editingPlanId ? "Plan updated." : "Plan created.");
+            beginPlanCreate();
+            await Promise.all([loadAdminPlans(), loadSubscriptionPlans()]);
+        } catch (error) {
+            setPlanFormError(error instanceof Error ? error.message : "Could not save this plan.");
+            setAdminNotice("");
+        } finally { setPlanBusy(""); }
+    }
+
+    async function deletePlan(plan: AdminPlan) {
+        if (!permissions.canModerate || planBusy) return;
+        if (!window.confirm(`Delete the ${plan.name} plan? Default and assigned plans are protected.`)) return;
+        setPlanBusy(plan.id);
+        try {
+            await apiFetch(`/admin/plans/${encodeURIComponent(plan.id)}`, { method: "DELETE" });
+            setAdminError("");
+            setAdminNotice(`Plan ${plan.name} deleted.`);
+            if (editingPlanId === plan.id) beginPlanCreate();
+            await Promise.all([loadAdminPlans(), loadSubscriptionPlans()]);
+        } catch (error) {
+            setPlanFormError(error instanceof Error ? error.message : "Could not delete this plan.");
+            setAdminNotice("");
+        } finally { setPlanBusy(""); }
+    }
 
     function beginSubscriptionCreate() {
         setEditingSubscriptionId("");
@@ -472,7 +624,7 @@ export function AdminDashboard() {
         setSubscriptionDraft({
             userId: item.owner?.id ?? "",
             shopId: item.shopId,
-            plan: (subscriptionPlans.find(plan => plan.id === item.plan)?.id ?? "starter") as SubscriptionPlanId,
+            plan: subscriptionPlans.find(plan => plan.id === item.plan)?.id ?? "starter",
             subscriptionStatus: item.subscriptionStatus,
             billingCycle: item.billingCycle ?? "monthly",
             nextBillingDate: item.nextBillingDate ? item.nextBillingDate.slice(0, 10) : ""
@@ -1345,6 +1497,50 @@ export function AdminDashboard() {
                 {tab === "subscriptions" && <>
                     <section className="oi-admin__panel">
                         <div className="oi-admin__panel-heading">
+                            <div><h2>{editingPlanId ? "Edit plan" : "Create plan"}</h2><p>Prices, commission and features here drive public pricing and Paystack verification.</p></div>
+                            {editingPlanId && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={beginPlanCreate}>New plan</button>}
+                        </div>
+                        {!permissions.canModerate && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Plan changes require marketplace moderation access.</p>}
+                        <form className="oi-admin__plan-form" onSubmit={event => void savePlan(event)}>
+                            <label>Plan id<input type="text" value={planDraft.id} disabled={planReadOnly || Boolean(editingPlanId)} placeholder="generated from name" onChange={event => setPlanDraft(current => ({ ...current, id: event.target.value }))} /></label>
+                            <label>Name<input type="text" value={planDraft.name} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, name: event.target.value }))} /></label>
+                            <label className="oi-admin__plan-field--wide">Tagline<input type="text" value={planDraft.tagline} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, tagline: event.target.value }))} /></label>
+                            <label>Monthly price (₦)<input type="number" min="0" step="0.01" value={planDraft.monthlyPrice} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, monthlyPrice: event.target.value }))} /></label>
+                            <label>Annual price / month (₦)<input type="number" min="0" step="0.01" value={planDraft.annualPrice} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, annualPrice: event.target.value }))} /></label>
+                            <label>Commission (%)<input type="number" min="0" max="100" step="0.01" value={planDraft.commission} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, commission: event.target.value }))} /></label>
+                            <label>Listing limit<input type="number" min="-1" step="1" value={planDraft.listingLimit} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, listingLimit: event.target.value }))} /></label>
+                            <label>Sort order<input type="number" min="0" step="1" value={planDraft.sortOrder} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, sortOrder: event.target.value }))} /></label>
+                            <label className="oi-admin__plan-toggle"><input type="checkbox" checked={planDraft.featured} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, featured: event.target.checked }))} /> Featured on pricing</label>
+                            <label className="oi-admin__plan-toggle"><input type="checkbox" checked={planDraft.active} disabled={planReadOnly} onChange={event => setPlanDraft(current => ({ ...current, active: event.target.checked }))} /> Active / purchasable</label>
+                            <label className="oi-admin__plan-field--wide">Features<textarea rows={5} value={planDraft.features} disabled={planReadOnly} placeholder={"+ Included feature\n- Excluded feature"} onChange={event => setPlanDraft(current => ({ ...current, features: event.target.value }))} /><small>One feature per line. Prefix with “+” for included or “-” for excluded.</small></label>
+                            <div className="oi-admin__subscription-actions">
+                                <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={!canSavePlan} aria-busy={Boolean(planBusy)}>{planBusy ? "Saving…" : editingPlanId ? "Save plan" : "Create plan"}</button>
+                                {editingPlanId && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={beginPlanCreate}>Cancel</button>}
+                            </div>
+                        </form>
+                        {planFormError && <p className="oi-form-error">{planFormError}</p>}
+                        <div className="oi-admin__table-wrap">
+                            <table className="oi-admin__table">
+                                <thead><tr><th>Plan</th><th>Monthly</th><th>Annual / mo</th><th>Commission</th><th>Listings</th><th>Status</th><th>Order</th><th className="oi-seller-table__right">Actions</th></tr></thead>
+                                <tbody>{adminPlans.map(plan => (
+                                    <tr key={plan.id}>
+                                        <td><b>{plan.name}</b><small>{plan.id}</small></td>
+                                        <td>{money(plan.monthlyPrice)}</td>
+                                        <td>{money(plan.annualPrice)}</td>
+                                        <td>{plan.commission}%</td>
+                                        <td>{plan.listingLimit === -1 ? "Unlimited" : plan.listingLimit}</td>
+                                        <td><span className={`oi-admin__badge ${plan.active ? "is-approved" : "is-rejected"}`}>{plan.active ? "Active" : "Inactive"}</span></td>
+                                        <td>{plan.sortOrder}</td>
+                                        <td><div className="oi-admin__row-actions"><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={planReadOnly || planBusy === plan.id} onClick={() => beginPlanEdit(plan)}>Edit</button><button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={planReadOnly || planBusy === plan.id} onClick={() => void deletePlan(plan)}>Delete</button></div></td>
+                                    </tr>
+                                ))}</tbody>
+                            </table>
+                        </div>
+                        <div className="oi-admin__plan-note"><Icon name="shield" size={17} /><span>Inactive plans are hidden from public pricing and cannot be purchased. The default plan and plans already assigned to shops cannot be deleted; reassign or deactivate them instead.</span></div>
+                    </section>
+
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading">
                             <div><h2>{editingSubscriptionId ? "Edit subscription" : "Create subscription"}</h2><p>Assign a backend plan to a user's shop without creating payment records.</p></div>
                             {editingSubscriptionId && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={beginSubscriptionCreate}>New subscription</button>}
                         </div>
@@ -1372,7 +1568,7 @@ export function AdminDashboard() {
                             <label>Plan<select
                                 value={subscriptionDraft.plan}
                                 disabled={subscriptionReadOnly}
-                                onChange={event => setSubscriptionDraft(current => ({ ...current, plan: event.target.value as SubscriptionPlanId }))}
+                                onChange={event => setSubscriptionDraft(current => ({ ...current, plan: event.target.value }))}
                             >
                                 {subscriptionPlans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
                             </select></label>
