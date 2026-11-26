@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, clearAccessToken, isSessionExpired, setAccessToken, subscribeSessionExpiry } from "@/lib/api-client";
 
 export type UserRole = "customer" | "seller" | "admin";
 export type AccountStatus = "ACTIVE" | "INACTIVE" | "SUSPENDED";
@@ -63,8 +63,6 @@ type ApiUser = {
     createdAt?: string;
 };
 
-const TOKEN_KEY = "oilinga_access_token";
-
 function asAuthUser(user: ApiUser): AuthUser {
     const name = user.name || "Oilinga customer";
     return {
@@ -101,8 +99,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setError(null);
         } catch (requestError) {
             setUser(null);
+            if (isSessionExpired(requestError)) {
+                setError(null);
+                return;
+            }
             if (isUnauthorized(requestError)) {
-                if (typeof window !== "undefined") window.localStorage.removeItem(TOKEN_KEY);
+                clearAccessToken();
             } else {
                 setError(messageFor(requestError, "Could not load your account."));
             }
@@ -110,6 +112,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, []);
 
     useEffect(() => { void refreshUser(); }, [refreshUser]);
+
+    useEffect(() => subscribeSessionExpiry(() => {
+        setUser(null);
+        setError(null);
+    }), []);
 
     const authenticate = useCallback(async (
         action: "signup" | "signin",
@@ -122,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 action === "signup" ? "/auth/register" : "/auth/login",
                 { method: "POST", body: JSON.stringify(fields) }
             );
-            if (typeof window !== "undefined") window.localStorage.setItem(TOKEN_KEY, result.accessToken);
+            setAccessToken(result.accessToken);
             const authenticatedUser = asAuthUser(result.user);
             setUser(authenticatedUser);
             return { ok: true, user: authenticatedUser };
@@ -147,7 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             await apiFetch("/auth/logout", { method: "POST" }).catch(() => undefined);
             setUser(null);
         } finally {
-            if (typeof window !== "undefined") window.localStorage.removeItem(TOKEN_KEY);
+            clearAccessToken();
             setLoading(false);
         }
     }, []);
