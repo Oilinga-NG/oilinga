@@ -62,12 +62,63 @@ describe("mutateBackendData action mapping", () => {
         });
     });
 
+    it("maps full admin subscription management actions to the dedicated endpoints", async () => {
+        await mutateBackendData("admin-create-subscription", {
+            userId: "user-1",
+            shopId: "shop/1",
+            plan: "growth",
+            subscriptionStatus: "Active",
+            billingCycle: "annual",
+            nextBillingDate: "2027-01-01"
+        });
+        expect(apiFetch).toHaveBeenLastCalledWith("/admin/users/user-1/subscriptions", {
+            method: "POST",
+            body: JSON.stringify({
+                shopId: "shop/1",
+                plan: "growth",
+                subscriptionStatus: "Active",
+                billingCycle: "annual",
+                nextBillingDate: "2027-01-01T00:00:00.000Z"
+            })
+        });
+
+        await mutateBackendData("admin-update-subscription", {
+            shopId: "shop/1",
+            plan: "pro",
+            nextBillingDate: null
+        });
+        expect(apiFetch).toHaveBeenLastCalledWith("/admin/subscriptions/shop%2F1", {
+            method: "PATCH",
+            body: JSON.stringify({ plan: "pro", nextBillingDate: null })
+        });
+
+        await mutateBackendData("admin-delete-subscription", { shopId: "shop/1" });
+        expect(apiFetch).toHaveBeenLastCalledWith("/admin/subscriptions/shop%2F1", { method: "DELETE" });
+    });
+
+    it("rejects invalid subscription values before making a request", async () => {
+        await expect(mutateBackendData("admin-create-subscription", { userId: "u1", plan: "enterprise" }))
+            .rejects.toThrow("Unsupported subscription plan");
+        await expect(mutateBackendData("admin-update-subscription", { shopId: "s1", billingCycle: "weekly" }))
+            .rejects.toThrow("Unsupported billing cycle");
+    });
+
     it("rejects invalid subscription statuses and unknown actions locally", async () => {
         await expect(mutateBackendData("admin-set-subscription-status", { shopId: "s1", status: "Unknown" }))
             .rejects.toThrow("Unsupported subscription status");
         await expect(mutateBackendData("not-an-action", {}))
             .rejects.toThrow("Unsupported backend write action");
         expect(apiFetch).not.toHaveBeenCalled();
+    });
+});
+
+describe("readBackendData admin subscription views", () => {
+    it("reads subscriptions and assignable users from the dedicated admin endpoints", async () => {
+        await readBackendData("admin-subscriptions", { search: "zoe", status: "Paused", page: "2" });
+        expect(apiFetch).toHaveBeenLastCalledWith("/admin/subscriptions?search=zoe&status=Paused&page=2");
+
+        await readBackendData("admin-subscription-users", { limit: "100" });
+        expect(apiFetch).toHaveBeenLastCalledWith("/admin/subscription-users?limit=100");
     });
 });
 

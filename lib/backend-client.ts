@@ -55,6 +55,24 @@ function queryOf(params: Record<string, string>) {
     return text ? `?${text}` : "";
 }
 
+const SUBSCRIPTION_PLAN_IDS = ["starter", "growth", "pro"] as const;
+const SUBSCRIPTION_STATUSES = ["Active", "Paused", "Cancelled"] as const;
+const BILLING_CYCLES = ["monthly", "annual"] as const;
+
+function assertSubscriptionValue<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
+    const text = String(value ?? "");
+    if (!allowed.some(item => item === text)) throw new Error(`Unsupported ${label}: ${text || "empty"}`);
+    return text as T;
+}
+
+function subscriptionDateValue(value: unknown): string | null {
+    if (value === undefined || value === null || value === "") return null;
+    const text = String(value);
+    const parsed = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00.000Z`) : new Date(text);
+    if (Number.isNaN(parsed.getTime())) throw new Error("Invalid subscription billing date");
+    return parsed.toISOString();
+}
+
 export async function readBackendData<T>(view: string, params: Record<string, string> = {}): Promise<T> {
     let result: unknown;
     if (view === "marketplace") {
@@ -137,6 +155,10 @@ export async function readBackendData<T>(view: string, params: Record<string, st
         result = await apiFetch(`/admin/products/moderation${queryOf(params)}`);
     } else if (view === "admin-user-permissions") {
         result = await apiFetch(`/admin/users/${encodeURIComponent(params.id ?? "")}/permissions`);
+    } else if (view === "admin-subscriptions") {
+        result = await apiFetch(`/admin/subscriptions${queryOf(params)}`);
+    } else if (view === "admin-subscription-users") {
+        result = await apiFetch(`/admin/subscription-users${queryOf(params)}`);
     } else if (view === "admin-payouts") {
         result = await apiFetch(`/admin/payouts${queryOf(params)}`);
     } else if (view === "admin-payout-detail") {
@@ -326,12 +348,41 @@ export async function mutateBackendData<T = { ok: boolean }>(action: string, pay
     }
     /** Moderator-only: update a shop's subscription lifecycle state. */
     if (action === "admin-set-subscription-status") {
-        const status = String(payload.status);
-        if (!["Active", "Paused", "Cancelled"].includes(status)) throw new Error(`Unsupported subscription status: ${status}`);
+        const status = assertSubscriptionValue(payload.status, SUBSCRIPTION_STATUSES, "subscription status");
         return await apiFetch<T>(`/admin/subscriptions/${encodeURIComponent(String(payload.shopId))}/status`, {
             method: "PATCH",
             body: JSON.stringify({ status })
         });
+    }
+    if (action === "admin-create-subscription") {
+        const plan = assertSubscriptionValue(payload.plan, SUBSCRIPTION_PLAN_IDS, "subscription plan");
+        const subscriptionStatus = assertSubscriptionValue(payload.subscriptionStatus ?? "Active", SUBSCRIPTION_STATUSES, "subscription status");
+        const billingCycle = assertSubscriptionValue(payload.billingCycle ?? "monthly", BILLING_CYCLES, "billing cycle");
+        return await apiFetch<T>(`/admin/users/${encodeURIComponent(String(payload.userId))}/subscriptions`, {
+            method: "POST",
+            body: JSON.stringify({
+                ...(payload.shopId ? { shopId: String(payload.shopId) } : {}),
+                plan,
+                subscriptionStatus,
+                billingCycle,
+                nextBillingDate: subscriptionDateValue(payload.nextBillingDate)
+            })
+        });
+    }
+    if (action === "admin-update-subscription") {
+        const body: Record<string, unknown> = {};
+        if (payload.plan !== undefined) body.plan = assertSubscriptionValue(payload.plan, SUBSCRIPTION_PLAN_IDS, "subscription plan");
+        if (payload.subscriptionStatus !== undefined) body.subscriptionStatus = assertSubscriptionValue(payload.subscriptionStatus, SUBSCRIPTION_STATUSES, "subscription status");
+        if (payload.billingCycle !== undefined) body.billingCycle = assertSubscriptionValue(payload.billingCycle, BILLING_CYCLES, "billing cycle");
+        if (payload.nextBillingDate !== undefined) body.nextBillingDate = subscriptionDateValue(payload.nextBillingDate);
+        if (!Object.keys(body).length) throw new Error("No subscription changes provided");
+        return await apiFetch<T>(`/admin/subscriptions/${encodeURIComponent(String(payload.shopId))}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    }
+    if (action === "admin-delete-subscription") {
+        return await apiFetch<T>(`/admin/subscriptions/${encodeURIComponent(String(payload.shopId))}`, { method: "DELETE" });
     }
     if (action === "upsert-category") {
         return await apiFetch<T>("/admin/categories", { method: "POST", body: JSON.stringify(payload.category) });

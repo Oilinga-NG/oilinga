@@ -16,6 +16,7 @@ import { apiFetch } from "@/lib/api-client";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { useMarketplaceData } from "@/components/providers/MarketplaceDataProvider";
 import type { Category } from "@/lib/data";
+import type { Plan } from "@/lib/subscription";
 
 type ModerationStatus = "NONE" | "PENDING" | "APPROVED" | "REJECTED";
 type VerificationStatus = "UNREQUESTED" | "PENDING" | "APPROVED" | "REJECTED";
@@ -144,6 +145,37 @@ type AuditItem = {
 };
 type Paginated<T> = { items: T[]; pagination: { page: number; limit: number; total: number; pages: number } };
 type UserPermissionView = { userId: string; role: string; permissions: AdminPermissions };
+type SubscriptionPlanId = "starter" | "growth" | "pro";
+type BillingCycle = "monthly" | "annual";
+type AdminSubscription = {
+    id: string;
+    shopId: string;
+    shopName: string;
+    shopSlug: string;
+    owner: { id: string; name: string; email: string; role: string; status: string } | null;
+    plan: string;
+    planName: string;
+    subscriptionStatus: SubscriptionStatus;
+    billingCycle: BillingCycle | null;
+    nextBillingDate: string | null;
+    updatedAt: string;
+};
+type SubscriptionUser = {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    status: string;
+    shops: { id: string; name: string; slug: string; plan: string; subscriptionStatus: string }[];
+};
+type SubscriptionDraft = {
+    userId: string;
+    shopId: string;
+    plan: SubscriptionPlanId;
+    subscriptionStatus: SubscriptionStatus;
+    billingCycle: BillingCycle;
+    nextBillingDate: string;
+};
 const tabs: { id: Tab; label: string; icon: IconName }[] = [
     { id: "overview", label: "Overview", icon: "grid" },
     { id: "users", label: "Users & roles", icon: "shield" },
@@ -166,6 +198,19 @@ const permissionLabels: { key: PermissionKey; label: string; detail: string }[] 
 ];
 
 function money(value: number) { return `₦${value.toLocaleString("en-NG", { maximumFractionDigits: 2 })}`; }
+
+function formatSubscriptionDate(value: string | null) {
+    return value ? new Date(value).toLocaleDateString() : "—";
+}
+
+const emptySubscriptionDraft: SubscriptionDraft = {
+    userId: "",
+    shopId: "",
+    plan: "starter",
+    subscriptionStatus: "Active",
+    billingCycle: "monthly",
+    nextBillingDate: ""
+};
 
 const ADMIN_STATUS_LABELS: Record<OrderStatusKey, string> = {
     PENDING: "New",
@@ -232,6 +277,17 @@ export function AdminDashboard() {
     const [productNotes, setProductNotes] = useState<Record<string, string>>({});
     const [phase9Busy, setPhase9Busy] = useState("");
     const [subscriptionBusy, setSubscriptionBusy] = useState("");
+    const [subscriptions, setSubscriptions] = useState<AdminSubscription[]>([]);
+    const [subscriptionPagination, setSubscriptionPagination] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
+    const [subscriptionSearchInput, setSubscriptionSearchInput] = useState("");
+    const [subscriptionSearch, setSubscriptionSearch] = useState("");
+    const [subscriptionStatusFilter, setSubscriptionStatusFilter] = useState<"ALL" | SubscriptionStatus>("ALL");
+    const [subscriptionPage, setSubscriptionPage] = useState(1);
+    const [subscriptionUsers, setSubscriptionUsers] = useState<SubscriptionUser[]>([]);
+    const [subscriptionPlans, setSubscriptionPlans] = useState<Plan[]>([]);
+    const [subscriptionDraft, setSubscriptionDraft] = useState<SubscriptionDraft>(emptySubscriptionDraft);
+    const [editingSubscriptionId, setEditingSubscriptionId] = useState("");
+    const [subscriptionFormError, setSubscriptionFormError] = useState("");
 
     const loadAdminData = useCallback(async () => {
         const data = await readBackendData<{ shops: AdminShop[]; categories: Category[]; orders: CustomerOrder[]; payments: PaymentState; paymentRecords: PaymentRecord[]; refundRecords: PaymentRefundRecord[]; settlements: Settlement[]; settings: { commissionRate: number } }>("admin");
@@ -287,6 +343,24 @@ export function AdminDashboard() {
         const rows = await Promise.all(admins.map(item => readBackendData<UserPermissionView>("admin-user-permissions", { id: item.id })));
         setUserPermissions(Object.fromEntries(rows.map(row => [row.userId, row.permissions])));
     }, [users]);
+
+    const loadSubscriptions = useCallback(async () => {
+        const params: Record<string, string> = { page: String(subscriptionPage), limit: "20" };
+        if (subscriptionSearch) params.search = subscriptionSearch;
+        if (subscriptionStatusFilter !== "ALL") params.status = subscriptionStatusFilter;
+        const data = await readBackendData<Paginated<AdminSubscription>>("admin-subscriptions", params);
+        setSubscriptions(data.items);
+        setSubscriptionPagination(data.pagination);
+    }, [subscriptionPage, subscriptionSearch, subscriptionStatusFilter]);
+
+    const loadSubscriptionUsers = useCallback(async () => {
+        const data = await readBackendData<Paginated<SubscriptionUser>>("admin-subscription-users", { limit: "100" });
+        setSubscriptionUsers(data.items);
+    }, []);
+
+    const loadSubscriptionPlans = useCallback(async () => {
+        setSubscriptionPlans(await apiFetch<Plan[]>("/subscriptions/plans"));
+    }, []);
 
     useEffect(() => {
         if (!authReady) return;
@@ -360,6 +434,116 @@ export function AdminDashboard() {
         void loadUserPermissions().catch(error => setAdminError(error instanceof Error ? error.message : "Could not load administrator permissions."));
     }, [authReady, user, tab, permissions.canManageUsers, users, loadUserPermissions]);
 
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || tab !== "subscriptions") return;
+        let cancelled = false;
+        void loadSubscriptions().catch(error => {
+            if (!cancelled) setAdminError(error instanceof Error ? error.message : "Could not load subscriptions.");
+        });
+        return () => { cancelled = true; };
+    }, [authReady, user, tab, loadSubscriptions]);
+
+    useEffect(() => {
+        if (!authReady || user?.role !== "admin" || tab !== "subscriptions") return;
+        let cancelled = false;
+        void Promise.all([loadSubscriptionUsers(), loadSubscriptionPlans()]).catch(error => {
+            if (!cancelled) setAdminError(error instanceof Error ? error.message : "Could not load subscription options.");
+        });
+        return () => { cancelled = true; };
+    }, [authReady, user, tab, loadSubscriptionUsers, loadSubscriptionPlans]);
+
+    const editingSubscription = subscriptions.find(item => item.shopId === editingSubscriptionId) ?? null;
+    const selectedSubscriptionUser = subscriptionUsers.find(item => item.id === subscriptionDraft.userId) ?? null;
+    const subscriptionShopOptions = editingSubscription
+        ? [{ id: editingSubscription.shopId, name: editingSubscription.shopName }]
+        : selectedSubscriptionUser?.shops.map(shop => ({ id: shop.id, name: shop.name })) ?? [];
+    const selectedSubscriptionPlan = subscriptionPlans.find(plan => plan.id === subscriptionDraft.plan) ?? null;
+    const subscriptionReadOnly = !permissions.canModerate || Boolean(subscriptionBusy);
+    const canSaveSubscription = permissions.canModerate && !subscriptionBusy && (Boolean(editingSubscriptionId) || subscriptionShopOptions.length > 0);
+
+    function beginSubscriptionCreate() {
+        setEditingSubscriptionId("");
+        setSubscriptionDraft(emptySubscriptionDraft);
+        setSubscriptionFormError("");
+    }
+
+    function beginSubscriptionEdit(item: AdminSubscription) {
+        setEditingSubscriptionId(item.shopId);
+        setSubscriptionDraft({
+            userId: item.owner?.id ?? "",
+            shopId: item.shopId,
+            plan: (subscriptionPlans.find(plan => plan.id === item.plan)?.id ?? "starter") as SubscriptionPlanId,
+            subscriptionStatus: item.subscriptionStatus,
+            billingCycle: item.billingCycle ?? "monthly",
+            nextBillingDate: item.nextBillingDate ? item.nextBillingDate.slice(0, 10) : ""
+        });
+        setSubscriptionFormError("");
+    }
+
+    function applySubscriptionSearch(event: FormEvent) {
+        event.preventDefault();
+        setSubscriptionSearch(subscriptionSearchInput.trim());
+        setSubscriptionPage(1);
+    }
+
+    async function saveSubscription(event: FormEvent) {
+        event.preventDefault();
+        if (!permissions.canModerate || subscriptionBusy) return;
+        if (!editingSubscriptionId && !subscriptionDraft.userId) {
+            setSubscriptionFormError("Select the account that owns this subscription.");
+            return;
+        }
+        if (!editingSubscriptionId && subscriptionShopOptions.length === 0) {
+            setSubscriptionFormError("The selected account does not have a shop yet.");
+            return;
+        }
+        setSubscriptionBusy(editingSubscriptionId || "create");
+        setSubscriptionFormError("");
+        try {
+            if (editingSubscriptionId) {
+                await mutateBackendData("admin-update-subscription", {
+                    shopId: editingSubscriptionId,
+                    plan: subscriptionDraft.plan,
+                    subscriptionStatus: subscriptionDraft.subscriptionStatus,
+                    billingCycle: subscriptionDraft.billingCycle,
+                    nextBillingDate: subscriptionDraft.nextBillingDate
+                });
+            } else {
+                await mutateBackendData("admin-create-subscription", {
+                    userId: subscriptionDraft.userId,
+                    ...(subscriptionDraft.shopId ? { shopId: subscriptionDraft.shopId } : {}),
+                    plan: subscriptionDraft.plan,
+                    subscriptionStatus: subscriptionDraft.subscriptionStatus,
+                    billingCycle: subscriptionDraft.billingCycle,
+                    nextBillingDate: subscriptionDraft.nextBillingDate
+                });
+            }
+            setAdminError("");
+            setAdminNotice(editingSubscriptionId ? "Subscription updated." : "Subscription created.");
+            beginSubscriptionCreate();
+            await Promise.all([loadSubscriptions(), loadSubscriptionUsers(), loadAdminData(), refreshMarketplace()]);
+        } catch (error) {
+            setSubscriptionFormError(error instanceof Error ? error.message : "Could not save this subscription.");
+            setAdminNotice("");
+        } finally { setSubscriptionBusy(""); }
+    }
+
+    async function deleteSubscription(item: AdminSubscription) {
+        if (!permissions.canModerate || subscriptionBusy) return;
+        if (!window.confirm(`Delete the ${item.planName} subscription for ${item.shopName}? The shop and billing history are retained.`)) return;
+        setSubscriptionBusy(item.shopId);
+        try {
+            await mutateBackendData("admin-delete-subscription", { shopId: item.shopId });
+            setAdminError("");
+            setAdminNotice(`Subscription deleted for ${item.shopName}.`);
+            if (editingSubscriptionId === item.shopId) beginSubscriptionCreate();
+            await Promise.all([loadSubscriptions(), loadAdminData(), refreshMarketplace()]);
+        } catch (error) {
+            setAdminError(error instanceof Error ? error.message : "Could not delete this subscription.");
+            setAdminNotice("");
+        } finally { setSubscriptionBusy(""); }
+    }
+
     async function saveShop(next: AdminShop) {
         if (!permissions.canModerate) return;
         const updated = next.shopStatus === "Paused" || !next.verified ? { ...next, published: false } : next;
@@ -372,24 +556,6 @@ export function AdminDashboard() {
             setAdminError("");
             setAdminNotice("Shop controls updated.");
         } catch (error) { setAdminError(error instanceof Error ? error.message : "Could not update this shop."); }
-    }
-
-    async function setSubscriptionStatus(shop: AdminShop, status: SubscriptionStatus) {
-        if (!permissions.canModerate || subscriptionBusy) return;
-        const shopId = shop.id ?? shop.slug;
-        if (!shopId) { setAdminError("This shop has no backend id, so its subscription cannot be updated."); return; }
-        setSubscriptionBusy(shopId);
-        try {
-            // No optimistic update: the select keeps the backend value until the
-            // mutation succeeds and the authoritative admin data is reloaded.
-            await mutateBackendData("admin-set-subscription-status", { shopId, status });
-            setAdminError("");
-            setAdminNotice(`Subscription for ${shop.shop} set to ${status}.`);
-            await Promise.all([loadAdminData(), loadDashboard(), refreshMarketplace()]);
-        } catch (error) {
-            setAdminError(error instanceof Error ? error.message : "Could not update this subscription.");
-            setAdminNotice("");
-        } finally { setSubscriptionBusy(""); }
     }
 
     async function saveProductStatus(shop: AdminShop, product: AdminProduct, status: NonNullable<AdminProduct["status"]>) {
@@ -1176,21 +1342,97 @@ export function AdminDashboard() {
                     </section>
                 </>}
 
-                {tab === "subscriptions" && <section className="oi-admin__panel">
-                    <div className="oi-admin__panel-heading"><div><h2>Subscription overview</h2><p>Plan and status values are read from backend shop records.</p></div></div>
-                    {!permissions.canModerate && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Subscription status changes require marketplace moderation access.</p>}
-                    {shops.length ? shops.map(item => {
-                        const shopId = item.id ?? item.slug;
-                        return <div className="oi-admin__shop-control" key={item.slug}><div><b>{item.shop}</b><span>Plan: {item.plan ?? "Free"} · Status: {item.subscriptionStatus ?? "Active"}</span></div><label>Subscription status<select
-                            aria-label={`Subscription status for ${item.shop}`}
-                            value={item.subscriptionStatus ?? "Active"}
-                            disabled={!permissions.canModerate || Boolean(subscriptionBusy)}
-                            aria-busy={subscriptionBusy === shopId}
-                            onChange={event => void setSubscriptionStatus(item, event.target.value as SubscriptionStatus)}
-                        ><option>Active</option><option>Paused</option><option>Cancelled</option></select></label></div>;
-                    }) : <p className="oi-admin__muted">No subscriptions are registered.</p>}
-                    <div className="oi-admin__plan-note"><Icon name="shield" size={17} /><span>Plan pricing and recurring invoices are not configured here. The plan and status shown are backend-managed shop metadata.</span></div>
-                </section>}
+                {tab === "subscriptions" && <>
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading">
+                            <div><h2>{editingSubscriptionId ? "Edit subscription" : "Create subscription"}</h2><p>Assign a backend plan to a user's shop without creating payment records.</p></div>
+                            {editingSubscriptionId && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={beginSubscriptionCreate}>New subscription</button>}
+                        </div>
+                        {!permissions.canModerate && <p className="oi-admin__read-only"><Icon name="lock" size={15} /> Creating, editing and deleting subscriptions requires marketplace moderation access.</p>}
+                        <form className="oi-admin__subscription-form" onSubmit={event => void saveSubscription(event)}>
+                            <label>Account<select
+                                value={subscriptionDraft.userId}
+                                disabled={subscriptionReadOnly || Boolean(editingSubscriptionId)}
+                                onChange={event => setSubscriptionDraft(current => ({ ...current, userId: event.target.value, shopId: "" }))}
+                            >
+                                <option value="">Select an account</option>
+                                {subscriptionUsers.map(user => <option key={user.id} value={user.id}>{user.name} · {user.email}</option>)}
+                                {editingSubscription?.owner && !subscriptionUsers.some(user => user.id === editingSubscription.owner?.id) && (
+                                    <option value={editingSubscription.owner.id}>{editingSubscription.owner.name} · {editingSubscription.owner.email}</option>
+                                )}
+                            </select></label>
+                            <label>Shop<select
+                                value={subscriptionDraft.shopId || subscriptionShopOptions[0]?.id || ""}
+                                disabled={subscriptionReadOnly || Boolean(editingSubscriptionId)}
+                                onChange={event => setSubscriptionDraft(current => ({ ...current, shopId: event.target.value }))}
+                            >
+                                {!editingSubscriptionId && <option value="">Use the account's first shop</option>}
+                                {subscriptionShopOptions.map(shop => <option key={shop.id} value={shop.id}>{shop.name}</option>)}
+                            </select></label>
+                            <label>Plan<select
+                                value={subscriptionDraft.plan}
+                                disabled={subscriptionReadOnly}
+                                onChange={event => setSubscriptionDraft(current => ({ ...current, plan: event.target.value as SubscriptionPlanId }))}
+                            >
+                                {subscriptionPlans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+                            </select></label>
+                            <label>Status<select
+                                value={subscriptionDraft.subscriptionStatus}
+                                disabled={subscriptionReadOnly}
+                                onChange={event => setSubscriptionDraft(current => ({ ...current, subscriptionStatus: event.target.value as SubscriptionStatus }))}
+                            ><option>Active</option><option>Paused</option><option>Cancelled</option></select></label>
+                            <label>Billing cycle<select
+                                value={subscriptionDraft.billingCycle}
+                                disabled={subscriptionReadOnly}
+                                onChange={event => setSubscriptionDraft(current => ({ ...current, billingCycle: event.target.value as BillingCycle }))}
+                            ><option value="monthly">Monthly</option><option value="annual">Annual</option></select></label>
+                            <label>Next billing date<input
+                                type="date"
+                                value={subscriptionDraft.nextBillingDate}
+                                disabled={subscriptionReadOnly}
+                                onChange={event => setSubscriptionDraft(current => ({ ...current, nextBillingDate: event.target.value }))}
+                            /></label>
+                            <div className="oi-admin__subscription-actions">
+                                <button className="oi-btn oi-btn--primary oi-btn--sm" type="submit" disabled={!canSaveSubscription} aria-busy={Boolean(subscriptionBusy)}>
+                                    {subscriptionBusy ? "Saving…" : editingSubscriptionId ? "Save changes" : "Create subscription"}
+                                </button>
+                                {editingSubscriptionId && <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" onClick={beginSubscriptionCreate}>Cancel</button>}
+                            </div>
+                        </form>
+                        {!editingSubscriptionId && subscriptionDraft.userId && subscriptionShopOptions.length === 0 && <p className="oi-admin__muted">This account has no shop yet. Create a shop before assigning a subscription.</p>}
+                        {subscriptionFormError && <p className="oi-form-error">{subscriptionFormError}</p>}
+                        {selectedSubscriptionPlan && <div className="oi-admin__notice"><Icon name="shield" size={17} /><p><b>{selectedSubscriptionPlan.name}</b> · {money(subscriptionDraft.billingCycle === "annual" ? selectedSubscriptionPlan.annualPrice : selectedSubscriptionPlan.monthlyPrice)} · {selectedSubscriptionPlan.commission}% commission · {selectedSubscriptionPlan.listingLimit === -1 ? "unlimited listings" : `${selectedSubscriptionPlan.listingLimit} listings`}</p></div>}
+                    </section>
+
+                    <section className="oi-admin__panel">
+                        <div className="oi-admin__panel-heading">
+                            <div><h2>Subscription overview</h2><p>Authoritative shop and account subscription state from the backend.</p></div>
+                            <span className="oi-admin__muted">{subscriptionPagination.total} matching</span>
+                        </div>
+                        <form className="oi-admin__filters" onSubmit={applySubscriptionSearch}>
+                            <label>Search<input value={subscriptionSearchInput} onChange={event => setSubscriptionSearchInput(event.target.value)} placeholder="Shop, owner or email" /></label>
+                            <label>Status<select value={subscriptionStatusFilter} onChange={event => { setSubscriptionStatusFilter(event.target.value as "ALL" | SubscriptionStatus); setSubscriptionPage(1); }}><option value="ALL">All statuses</option><option>Active</option><option>Paused</option><option>Cancelled</option></select></label>
+                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="submit">Search</button>
+                        </form>
+                        {subscriptions.length ? <div className="oi-admin__table-wrap"><table className="oi-admin__table"><thead><tr><th>Shop</th><th>Account</th><th>Plan</th><th>Status</th><th>Billing</th><th>Next billing</th><th className="oi-seller-table__right">Actions</th></tr></thead><tbody>{subscriptions.map(item => (
+                            <tr key={item.id}>
+                                <td><b>{item.shopName}</b><small>{item.shopSlug}</small></td>
+                                <td>{item.owner ? <><b>{item.owner.name}</b><small>{item.owner.email}</small></> : "—"}</td>
+                                <td><b>{item.planName}</b><small>{item.plan}</small></td>
+                                <td><span className={`oi-admin__badge ${item.subscriptionStatus === "Active" ? "is-approved" : item.subscriptionStatus === "Paused" ? "is-pending" : "is-rejected"}`}>{item.subscriptionStatus}</span></td>
+                                <td>{item.billingCycle ?? "—"}</td>
+                                <td>{formatSubscriptionDate(item.nextBillingDate)}</td>
+                                <td><div className="oi-admin__row-actions"><button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={subscriptionReadOnly} onClick={() => beginSubscriptionEdit(item)}>Edit</button><button className="oi-btn oi-btn--danger oi-btn--sm" type="button" disabled={subscriptionReadOnly || subscriptionBusy === item.shopId} onClick={() => void deleteSubscription(item)}>Delete</button></div></td>
+                            </tr>
+                        ))}</tbody></table></div> : <p className="oi-admin__muted">No subscriptions match this filter.</p>}
+                        <div className="oi-admin__row-actions">
+                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={subscriptionPage <= 1} onClick={() => setSubscriptionPage(current => current - 1)}>Previous</button>
+                            <span className="oi-admin__muted">Page {subscriptionPagination.page} of {Math.max(subscriptionPagination.pages, 1)}</span>
+                            <button className="oi-btn oi-btn--outline oi-btn--sm" type="button" disabled={subscriptionPage >= subscriptionPagination.pages} onClick={() => setSubscriptionPage(current => current + 1)}>Next</button>
+                        </div>
+                        <div className="oi-admin__plan-note"><Icon name="shield" size={17} /><span>Manual admin changes update subscription metadata only. They do not create payments, settlements or payouts; Paystack-backed purchases remain separately verified.</span></div>
+                    </section>
+                </>}
 
                 {tab === "reviews" && permissions.canModerate && <>
                     <section className="oi-admin__panel">
