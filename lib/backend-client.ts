@@ -20,11 +20,12 @@ export function toBackendProductPayload(product: Record<string, any>) {
             .filter((item: Record<string, any>) => Boolean(item?.url))
             .map((item: Record<string, any>) => ({ url: String(item.url), alt: item.alt ?? null }))
         : [];
+    const category = product.category ?? product.categoryId;
     return {
         ...(product.shopId || product.shop ? { shopId: String(product.shopId ?? product.shop) } : {}),
         name: String(product.name ?? ""),
         ...(product.slug ? { slug: String(product.slug) } : {}),
-        categoryId: product.category ?? product.categoryId ?? undefined,
+        ...(typeof category === "string" && category.trim() ? { categoryId: category.trim() } : {}),
         description: product.description || null,
         price: Number(product.price),
         size: product.size || null,
@@ -545,7 +546,7 @@ function legacyShop(row: Record<string, any>, productRows?: Record<string, any>[
         plan: row.plan ?? "Free",
         subscriptionStatus: row.subscriptionStatus ?? "Active",
         products: rawProducts.map((product: Record<string, any>) => {
-            const category = product.categoryId ?? product.category ?? "crude-palm";
+            const category = product.categoryId ?? product.category ?? "";
             return {
                 ...product,
                 dbId: String(product.id ?? ""),

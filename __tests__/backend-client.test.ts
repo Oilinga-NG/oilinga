@@ -171,3 +171,46 @@ describe("readBackendData marketplace categories", () => {
         expect(result.categories).toEqual([]);
     });
 });
+
+describe("create-product payload", () => {
+    it("posts the selected backend category id without a legacy fallback", async () => {
+        await mutateBackendData("create-product", {
+            product: {
+                shopId: "shop-1",
+                name: "Groundnut Oil",
+                category: "db-groundnut",
+                description: "Cold pressed",
+                price: 2400,
+                size: "5 litres",
+                stock: 6,
+                status: "Draft",
+                media: []
+            }
+        });
+
+        expect(apiFetch).toHaveBeenCalledWith("/products", {
+            method: "POST",
+            body: JSON.stringify({
+                shopId: "shop-1",
+                name: "Groundnut Oil",
+                categoryId: "db-groundnut",
+                description: "Cold pressed",
+                price: 2400,
+                size: "5 litres",
+                stock: 6,
+                status: "INACTIVE",
+                imageUrl: null,
+                media: []
+            })
+        });
+    });
+
+    it("omits an empty category instead of sending an invalid id", async () => {
+        await mutateBackendData("create-product", {
+            product: { name: "Uncategorised Oil", category: "", price: 1000, stock: 1, status: "Draft", media: [] }
+        });
+
+        const body = JSON.parse(apiFetch.mock.calls[0][1].body as string);
+        expect(body).not.toHaveProperty("categoryId");
+    });
+});

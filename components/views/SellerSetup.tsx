@@ -192,7 +192,10 @@ type Stage = "landing" | "register" | "products" | "dashboard";
 type WorkspaceTab = "overview" | "analytics" | "products" | "inventory" | "orders" | "earnings" | "notifications" | "subscription" | "settings";
 
 type ProductDraft = Omit<Listing, "id" | "dbId" | "status">;
-const blankProduct: ProductDraft = { name: "", price: "", size: "", stock: "", category: "crude-palm", description: "", imageUrl: "", media: [] };
+/** Category ids are database-owned; never preseed the form with a legacy slug. */
+function blankProduct(categories: Category[]): ProductDraft {
+    return { name: "", price: "", size: "", stock: "", category: categories[0]?.id ?? "", description: "", imageUrl: "", media: [] };
+}
 
 function mediaToText(media?: ProductMedia[]) {
     return (media ?? []).map(item => item.url).join("\n");
@@ -299,9 +302,12 @@ function ProductEditor({ item, categories, onSave, onDelete, busy = false }: {
     const [expanded, setExpanded] = useState(false);
 
     useEffect(() => {
-        setDraft(item);
+        setDraft({
+            ...item,
+            category: categories.some(category => category.id === item.category) ? item.category : categories[0]?.id ?? ""
+        });
         setMediaText(mediaToText(item.media));
-    }, [item]);
+    }, [item, categories]);
 
     function save() {
         onSave({ ...draft, media: textToMedia(mediaText, draft.media) });
@@ -392,7 +398,7 @@ export function SellerSetup() {
     const [owner, setOwner] = useState("");
     const [location, setLocation] = useState("");
     const [tagline, setTagline] = useState("");
-    const [product, setProduct] = useState(blankProduct);
+    const [product, setProduct] = useState<ProductDraft>(() => blankProduct(categories));
     const [error, setError] = useState("");
     const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
     const [productFormOpen, setProductFormOpen] = useState(false);
@@ -543,7 +549,7 @@ export function SellerSetup() {
                 id: String(item.id ?? ""),
                 dbId: item.dbId ? String(item.dbId) : undefined,
                 slug: item.slug,
-                category: item.category ?? "crude-palm",
+                category: item.category ?? "",
                 description: item.description ?? item.name ?? "",
                 status: item.status ?? "Draft",
                 imageUrl: item.imageUrl ?? null,
@@ -561,6 +567,15 @@ export function SellerSetup() {
         await loadWorkspace();
         return existing;
     }
+
+    // Categories load asynchronously and can be changed by an administrator. Keep the
+    // draft aligned with the live catalogue so submission never sends a stale id.
+    useEffect(() => {
+        if (!categories.length) return;
+        setProduct(current => categories.some(category => category.id === current.category)
+            ? current
+            : { ...current, category: categories[0].id });
+    }, [categories]);
 
     /** Persist a gallery through the dedicated media endpoints. The inline media
         array is still sent with the product for backwards compatibility. */
@@ -645,6 +660,10 @@ export function SellerSetup() {
             setError("Enter a product name, size, positive price and stock quantity.");
             return false;
         }
+        if (!categories.some(category => category.id === product.category)) {
+            setError(categories.length ? "Choose a category from the list." : "No categories are available. Ask an administrator to add one.");
+            return false;
+        }
         setSaving(true);
         try {
             const status: ListingStatus = setup.verified && setup.status !== "Paused" && Number(product.stock) > 0 ? "Active" : "Draft";
@@ -659,7 +678,7 @@ export function SellerSetup() {
             }
             await loadSellerData();
             await refreshMarketplace();
-            setProduct(blankProduct);
+            setProduct(blankProduct(categories));
             setError(mediaWarning);
             return true;
         } catch (productError) {
